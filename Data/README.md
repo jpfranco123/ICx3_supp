@@ -31,7 +31,7 @@ These files contain the description of each of the instances administered in the
 - cy: Y coordinates of the cities presented in the instances.
 - distances: Matrix of distances between cities.
 - id = Instance generation ID.
-- type: Type of instance (`1`= High TCC/Low propagations , `2`= High TCC/Low propagations , `3`= High TCC/Low propagations , `4`=High TCC/Low propagations, `5`=Overconstrained, `6`=Underconstrained)
+- type: Type of instance (`1`= High TCC , `2`= High TCC , `3`= High TCC, `4`=High TCC, `5`=Overconstrained, `6`=Underconstrained)
 - sol: Satisfiability (1= Satisfiable, 0= Unsatisfiable)
 - max_distance: Distance constraint (maximum distance that can be travelled)
 - nCities: Number of cities.
