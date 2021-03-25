@@ -4,7 +4,7 @@ This repository contains the supplementary data and data analysis related to the
 
 ## Data
 
-The behavioural data collected in the set of experiments in which we adminsitered one of three tasks: traveling salesperson problem (TSP), Boolean sastisfiability (3SAT) and the knapsack decision problem (KP). 
+The behavioural data collected in the set of experiments in which each participant performed one of three three tasks: traveling salesperson problem (TSP), Boolean sastisfiability (3SAT) and the knapsack decision problem (KP). 
 
 The data presented here has been collated across participants and cleaned according to the description in the manuscript (eee data preprocessing script). 
 
