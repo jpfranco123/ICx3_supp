@@ -1,0 +1,296 @@
+---
+title: "Behavioural Results KS-IC"
+author: "J. Pablo Franco"
+date: "`r format(Sys.time(), '%d %B, %Y')`"#"08/11/2017"
+output: 
+  html_document: 
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+```{r doc_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+
+table, td, th {
+  border: none;
+  padding-left: 1em;
+  padding-right: 1em;
+  min-width: 50%;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+</style>
+
+```{r folder_management}
+data_type="Work" #Directing to the right folder Raw Data or Work data
+experiment="exp_v4"#"Exp" #e.g. "Pilot","Exp"
+#versions=c("V2") #c("imV1")
+
+#Folder Setup
+if(dir.exists("~/Google Drive/My Drive")){
+  mother_folder = "~/Google Drive/My Drive/"
+} else {
+  mother_folder = "~/Google Drive/"
+}
+
+project_folder = paste0(mother_folder,"Shared PabloDN/ICx3/")
+
+code_folder = paste0(project_folder, "Code/behavAnalysis/")
+data_folder = paste0(project_folder, "Data/Behavioural Data/", experiment,"/", data_type,"/")
+setwd(code_folder)
+knitr::opts_knit$set(root.dir = code_folder)
+
+#Import functions
+source(file.path(code_folder,"DescriptiveFunctions.R"))
+
+# Participant Data
+#fileParticipants = paste0(project_folder,"Data/Participants Log.csv")
+
+# Task order Data 
+# fileOrdertasks = paste0(project_folder,"Data/Behavioural Data/", experiment,"/Taskorder.csv")
+#666
+
+#3SAT Data Text files
+folderDataSAT=paste0(data_folder,"SAT/")
+
+# TSP Data Text files
+folderDataTSP=paste0(data_folder,"TSP/")
+
+
+folderOut_figures = paste0(code_folder,"Output/Figures")
+folderOut_tables = paste0(code_folder,"Output/Tables")
+
+#Solver Data Text files
+
+
+# SAT Files
+folderIn_solver_SAT = paste0(mother_folder,"Melbourne/UNIMELB/Research/Complexity Project/Simulations Data/3-SAT/sat-results/")
+fileIn_solverP_SAT = paste0(folderIn_solver_SAT,"kd-5p/minisat_sat_5p_results.csv")
+fileIn_solverE_SAT = paste0(folderIn_solver_SAT,"kd-5e/minisat_sat_5e_results.csv")
+
+#TSP Files
+folderIn_solver_TSP =paste0(mother_folder,"Melbourne/UNIMELB/Research/Complexity Project/Simulations Data/TSP/exp-20-5/")
+
+fileIn_solver_TSP = paste0(folderIn_solver_TSP,"tsp-20-5.csv")
+
+# folderInstanceInfo='~/Google Drive/Melbourne/UNIMELB/Research/Complexity Project/Simulations Data/'
+# fileDecInstances = paste0(folderInstanceInfo,'KS decision/decisionInstancesInfoSubset.csv')
+# fileOptInstances = paste0(folderInstanceInfo,'KS optimisation/optimisationInstancesInfoSubset.csv')
+# 
+# fileDecInstancesAll = paste0(folderInstanceInfo,'KS decision/decisionInstancesInfo.csv')
+# 
+# optTaskMaxTime=60
+
+SATTaskMaxTime=110
+nVars_sat=5
+
+TSPTaskMaxTime = 40
+
+
+
+```
+
+```{r setup, collapse=TRUE}
+## Setting up the basics
+library(ggplot2)
+library(lme4)
+library(stargazer)
+library(knitr)
+library(dplyr)
+library(ggsignif)
+library(pander)
+library(plotly)
+library(reshape2)
+library(Hmisc)
+library(readr)
+
+#library(tibble)
+#library(plotrix)
+
+#Stores a list of all the regressions that are run
+#allModels=vector("list", length=0)
+
+#Output type for tables. Use "html" to view the output .html file and use "latex" to export .tex tables
+#outputType="html"
+
+```
+
+# 3-SAT
+
+## Import SAT data and omit invalid responses
+```{r sat_Import}
+#KS Import 
+dataTrial_SAT = importTrialInfo(folderDataSAT)
+
+#Adds Phase Transition Dummy Variable to data (1-> in Phase Transition / 0 -> Out of Phase Transition)
+dataTrial_SAT$phaseT=as.numeric(dataTrial_SAT$type<=4)
+
+#Filter additional participants.
+participantsToOmit=c("sat01","sat15")
+dataTrial_SAT = dataTrial_SAT %>% filter(!(pID %in% participantsToOmit))
+
+print(paste0(length(participantsToOmit)," participants were omitted in the analysis. sat15 always answered yes. sat01 answered YES most of the time, and on the 3 he answered NO, only 1 was correct."))
+
+
+# Cleaning Decsion Data:
+# Filters out those trials in which an answer was not given or an error acurred
+nOmitTrials = length(dataTrial_SAT$answer[dataTrial_SAT$answer>=2])
+NOmitPart= length(unique(dataTrial_SAT$pID[dataTrial_SAT$answer>=2]))
+dataTrial_SAT=dataTrial_SAT %>% filter(answer<2)
+print(paste(nOmitTrials,"Trials were omitted due to non-answers (from", NOmitPart,"Participants)."))
+
+
+#Add a "region" column
+dataTrial_SAT = dataTrial_SAT %>% mutate(region=recode(type, `1`= 'Phase Transition', `2`= 'Phase Transition', `3`= 'Phase Transition', `4`='Phase Transition', '5'='Overconstrained', '6'='Underconstrained'))
+
+```
+
+
+## Omit invalid response times
+```{r}
+
+### Time Spent Data Cleaning
+
+# Omit those participants that never submitted their answer from the timeSpent analysis
+#omitPID = c("be19","be31")
+minTimeSpent = dataTrial_SAT %>% group_by(pID) %>% summarise(minTime = min(timeSpent)) 
+omitPID = minTimeSpent$pID[abs(SATTaskMaxTime-minTimeSpent$minTime)<0.1] #Select those participants whose min time spent was optTaskMaxTime
+dataTrial_SAT_Time=dataTrial_SAT[!(dataTrial_SAT$pID %in% omitPID),]
+print(paste0("For time analysis (*effort*) ", length(omitPID)," participants that never submitted their answers were omitted."))
+
+#Omit Participant that in the first block didn't know they could skip
+dataTrial_SAT_Time=dataTrial_SAT_Time %>% filter(!(pID=="ic11" & block==1))
+print(paste0("For time analysis (*effort*) block 1 of an additional Participant was omitted because they didn't understand they could skip (based on what participant said druing experiment)"))
+
+
+```
+
+## Import solver data
+```{r}
+#Import simulations data (e.g. propagations data)
+
+simulationsData1= read.csv(fileIn_solverP_SAT,stringsAsFactors = FALSE)
+simulationsData2= read.csv(fileIn_solverE_SAT,stringsAsFactors = FALSE)
+simulationsData_SAT=bind_rows(simulationsData1,simulationsData2)
+
+simulationsData_SAT = dplyr::rename(simulationsData_SAT,id=case_id)
+
+dataTrial_SAT_sims =inner_join(dataTrial_SAT,simulationsData_SAT, by=c("id","ratio"))
+
+dataTrial_SAT_sims_Time =inner_join(dataTrial_SAT_Time,simulationsData_SAT, by=c("id","ratio"))
+
+```
+
+## Import click data
+```{r}
+dataclicks_SAT = importTrialInfo_clicks(folderDataSAT)
+```
+
+
+## Save Clean Data to file
+```{r}
+
+write_csv2(dataTrial_SAT_sims,file.path(data_folder,"SAT_clean.csv"))
+
+write_csv2(dataTrial_SAT_sims_Time,file.path(data_folder,"SAT_clean_time.csv"))
+
+write_csv2(dataclicks_SAT,file.path(data_folder,"SAT_clicks.csv"))
+
+```
+
+# TSP
+
+## Import TSP data and omit invalid answers
+```{r tsp_Import}
+#TSPImport 
+dataTrial_TSP = importTrialInfo(folderDataTSP)
+
+#Adds Phase Transition Dummy Variable to data (1-> in Phase Transition / 0 -> Out of Phase Transition)
+dataTrial_TSP$phaseT=as.numeric(dataTrial_TSP$type<=4)
+
+#Filter participants.
+participantsToOmit=c("tsp19")
+dataTrial_TSP = dataTrial_TSP %>% filter(!(pID %in% participantsToOmit))
+print(paste0(length(participantsToOmit)," participant was omitted in the decision analysis. tsp19 didn't understand the instructions concerning submission of the answer. Experimenter talked to him, and he clearly didn't understand the purpose of the YES/NO buttons."))
+
+# Cleaning Decsion Data:
+# Filters out those trials in which an answer was not given
+nOmitTrials = length(dataTrial_TSP$answer[dataTrial_TSP$answer>=2])
+NOmitPart= length(unique(dataTrial_TSP$pID[dataTrial_TSP$answer>=2]))
+dataTrial_TSP=dataTrial_TSP %>% filter(answer<2)
+print(paste(nOmitTrials,"Trials were omitted due to non-answers (from", NOmitPart,"Participants)."))
+
+#Add a "region" column
+dataTrial_TSP = dataTrial_TSP %>% mutate(region=recode(type, `1`= 'Phase Transition', `2`= 'Phase Transition', `3`= 'Phase Transition', `4`='Phase Transition', '5'='Overconstrained', '6'='Underconstrained'))
+
+
+```
+
+
+## Omit invalid response times 
+```{r}
+# Omit those participants that never submitted their answer from the timeSpent analysis
+#omitPID = c("be19","be31")
+minTimeSpent = dataTrial_TSP %>% group_by(pID) %>% summarise(minTime = min(timeSpent)) 
+omitPID = minTimeSpent$pID[abs(TSPTaskMaxTime-minTimeSpent$minTime)<0.1] #Select those participants whose min time spent was optTaskMaxTime
+dataTrial_TSP_Time=dataTrial_TSP[!(dataTrial_TSP$pID %in% omitPID),]
+print(paste0("For time analysis (*effort*) ", length(omitPID)," participants that never submitted their answers were omitted."))
+```
+
+## Import solver data
+Propagations and accuracy by Instance
+```{r}
+#Import simlations data (e.g. propagations data)
+
+simulationsData_TSP= read.csv(fileIn_solver_TSP,stringsAsFactors = FALSE)
+
+simulationsData_TSP = dplyr::rename(simulationsData_TSP,id=problem)
+
+extract_id_TSP = function(path_string){
+  path = strsplit(path_string,"/")[[1]]
+  file = path[length(path)]
+  id = sub(".dzn","",file)
+}
+
+#Accuracy dataset with solver information (propagations)
+dataInput = dataTrial_TSP
+dataInput$id = sapply(dataInput$id,extract_id_TSP)
+dataTrial_TSP_sims =inner_join(dataInput,simulationsData_TSP, by="id")
+dim(dataTrial_TSP_sims)
+
+#Time dataset with solver information (propagations)
+dataInput = dataTrial_TSP_Time
+dataInput$id = sapply(dataInput$id,extract_id_TSP)
+dataTrial_TSP_sims_Time =inner_join(dataInput,simulationsData_TSP, by="id")
+dim(dataTrial_TSP_sims_Time)
+
+
+```
+
+## Import click data
+```{r}
+dataclicks_TSP = importTrialInfo_clicks(folderDataTSP)##TODO
+```
+
+## Save Clean Data to file
+```{r}
+
+write_csv2(dataTrial_TSP_sims,file.path(data_folder,"TSP_clean.csv"))
+
+write_csv2(dataTrial_TSP_sims_Time,file.path(data_folder,"TSP_clean_time.csv"))
+
+write_csv2(dataclicks_TSP,file.path(data_folder,"TSP_clicks.csv"))
+
+```
+
+
+

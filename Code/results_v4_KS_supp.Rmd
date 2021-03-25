@@ -1,0 +1,528 @@
+---
+title: "Behavioural results for the knapsack task"
+author: "J. Pablo Franco"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_notebook: 
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+```{r doc_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{=html}
+<style>
+
+table, td, th {
+  border: none;
+  padding-left: 1em;
+  padding-right: 1em;
+  min-width: 50%;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+</style>
+```
+
+```{r folder_management}
+
+project_folder = "/Volumes/GoogleDrive/My Drive/Melbourne/UNIMELB/Research/Complexity Project/ICx3_new/Code/behavAnalysis/ICx3_supp/"
+code_folder = paste0(project_folder, "Code/")
+data_folder = paste0(project_folder, "Data/")
+
+setwd(code_folder)
+knitr::opts_knit$set(root.dir = code_folder)
+
+#Import functions
+source(file.path(code_folder,"DescriptiveFunctions.R"))
+
+# Participant Data
+folderModels = "/Volumes/GoogleDrive/My Drive/Melbourne/UNIMELB/Research/Complexity Project/ICx3_new/Code/behavAnalysis/Output/"
+
+folderOut_figures = paste0(project_folder,"Output/Figures")
+folderOut_tables = paste0(project_folder,"Output/Tables")
+```
+
+```{r setup, collapse=TRUE}
+## Setting up the basics
+library(ggplot2)
+library(knitr)
+library(dplyr)
+library(ggsignif)
+library(pander)
+library(plotly)
+library(reshape2)
+library(Hmisc)
+library(readr)
+library(brms)
+library(parallel)
+library(sjstats)
+library(bayesplot)
+library(bmlm)
+library(DiagrammeR)
+library(tidyr)
+
+#From easystats:
+library(parameters)
+library(see)
+library(bayestestR)
+library(performance)
+library(forcats)
+library(ggpol)
+
+```
+
+```{r}
+# brms Input
+
+chains_brms = 4
+cores_brms = min(chains_brms,detectCores())
+seed_brms = 111
+iters_high = 4000
+
+```
+
+```{r}
+# Functions
+save_summarise_model = function(model, modelName){
+  if (modelName %in% names(allModels)){
+    warning("Model Name already exists!")
+    model = allModels[[modelName]]
+  } else {
+    allModels[[modelName]]<<- model
+  }
+ 
+    table = model_parameters(model, 
+                              ci_method = "HDI",ci=0.95,test = c("hdi","pd"))
+    
+    table2 = performance::model_performance(model,metrics="common")
+
+    plo = plot(hdi(model, ci = c(0.95)), data = model)+
+          ggtitle("Posterior distributions",
+                  "with medians and 95% quantile-based-intervals") +
+          theme(plot.title = element_text(hjust = 0.5),
+                plot.subtitle = element_text(hjust = 0.5))
+  
+    print(as_tibble(table))
+    print(as_tibble(table2))
+    print(plo)
+    
+    allModels[[modelName]]<<- model
+}
+
+```
+
+```{r}
+# Use current models or rerun everything Comment one option
+
+# allModels := list of all the regressions that are run 
+
+
+## Option1: Use current saved models
+
+# Import estimated models
+allModels = read_rds(file.path(folderModels,"ICx3_models_KS.RData"))
+
+# Don't run brms models
+brm2 =  function(...){
+  return(FALSE)
+}
+
+# ## Option2: Rerun everything from scratch
+# 
+# allModels=vector("list", length=0)
+# 
+# brm2 =  function(...){
+#   return(brm(...))
+# }
+
+
+```
+
+# Knapsack decision problem (KP)
+
+# Accuracy 
+
+Read Clean Data to file
+
+```{r}
+
+dataTrial_KS= read_csv(file.path(data_folder,"KSDec_clean.csv"),
+                       col_types = cols(w = col_character(),
+                                        v = col_character()))
+
+
+dataTrial_KS$region = case_when(
+  dataTrial_KS$type %in% c(1,2,3,4) ~ "Phase Transition",
+  dataTrial_KS$type %in% c(6) ~ "Underconstrained",
+  dataTrial_KS$type %in% c(5) ~ "Overconstrained"
+)
+
+```
+
+## Satisfiability
+
+```{r}
+dataInput=dataTrial_KS
+
+logitRandomIntercept = brm2(correct ~ sol + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0,
+                           save_all_pars = TRUE)
+
+tableName='ks_acc_sat1'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+## Number of witnesses 
+
+### With TCC
+
+```{r}
+dataInput=dataTrial_KS
+
+dataInput = dataInput %>% filter(sol==1)
+
+dataInput$nSolutions_log =log(dataInput$nSolutions)
+logitRandomIntercept = brm2(correct ~ nSolutions + phaseT + phaseT:nSolutions + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0,
+                           save_all_pars = TRUE)
+
+tableName='ks_acc_ns1'
+save_summarise_model(allModels[['ks_acc_ns1']], tableName)
+```
+
+```{r}
+model = allModels[['ks_acc_ns1']]
+plot(marginal_effects(model), plot = TRUE, ask = FALSE)
+```
+
+### With TCC (no interaction)
+
+```{r}
+dataInput=dataTrial_KS
+
+dataInput = dataInput %>% filter(sol==1)
+
+logitRandomIntercept = brm2(correct ~ nSolutions + phaseT +  (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0,
+                           save_all_pars = TRUE)
+
+tableName='ks_acc_ns2'
+save_summarise_model(allModels[['ks_acc_ns2']], tableName)
+```
+
+Marginal Effects
+
+```{r}
+#marginal_effects(logitRandomIntercept, ask=FALSE)
+plot(marginal_effects(allModels[['ks_acc_ns2']]), plot = TRUE, ask = FALSE)
+```
+
+### Alone
+
+```{r}
+dataInput=dataTrial_KS
+
+dataInput = dataInput %>% filter(sol==1)
+
+logitRandomIntercept = brm2(correct ~ nSolutions +  (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0,
+                           save_all_pars = TRUE)
+
+# m3 = logitRandomIntercept
+tableName='ks_acc_ns3'
+save_summarise_model(allModels[['ks_acc_ns3']], tableName)
+
+```
+
+#### Plot
+
+```{r}
+dataInput=dataTrial_KS
+
+dataInput = dataInput %>% filter(sol==1)
+
+model_ICexpost = allModels[['ks_acc_ns3']]
+
+mean_accuracy = dataInput %>% group_by(id,phaseT,sol,nSolutions,ICexpost) %>% 
+  summarise(accuracy = mean(correct))
+
+pp  = plot(conditional_effects(model_ICexpost), plot = TRUE, ask = FALSE)
+
+pp$nSolutions + 
+  geom_point(data=mean_accuracy,aes(x = nSolutions, y = accuracy, col=as.factor(phaseT)),inherit.aes = FALSE)+
+  theme_minimal()
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_accuracy,
+                               aes(x = nSolutions, y = accuracy, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Number of solution witnesses")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+# c( "#FC4E07","#E7B800"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  scale_x_continuous(breaks = c(1,5,9,13))+
+  ylim(0.2,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_KS_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+## ICexpost
+
+### All instances
+
+```{r}
+dataInput = dataTrial_KS
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='ks_acc_icexpost1'
+save_summarise_model(allModels[['ks_acc_icexpost1']], tableName)
+
+```
+
+##### Model Fit
+
+```{r}
+#st05
+dataInput = dataTrial_KS
+
+model_ICexpost = allModels[['ks_acc_icexpost1']]
+
+# Make predictions excluding random effects (pID)
+predictions = predict(model_ICexpost, dataInput, re_formula = NA)
+
+# Estimating the significance of the fit. This is done considering the probability estimation rather than the binary classification.
+
+#Performs the Hosmer-Lemeshow goodness of fit test
+logistic_significance = generalhoslem::logitgof(dataInput$correct, 
+                                                predictions[,1], g = 10, ord = FALSE)
+logistic_significance
+
+# Finds R2 using binary outcomes
+# https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+#predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+r_2_binary = cor(dataInput$correct, predictions[,1])^2
+r_2_binary
+
+# Finds R2 using mean accuracies per instance
+predictions2 = predict(model_ICexpost,mean_accuracy, re_formula = NA)
+r_2_probabilities = cor(mean_accuracy$accuracy, predictions2[,1])^2
+r_2_probabilities
+```
+
+#### Plot
+
+```{r}
+dataInput = dataTrial_KS
+model_ICexpost = allModels[['ks_acc_icexpost1']]
+
+mean_accuracy = dataInput %>% group_by(instanceNumber,phaseT,sol,ICexpost) %>% 
+  summarise(accuracy = mean(correct))
+
+pp  = plot(conditional_effects(model_ICexpost), plot = TRUE, ask = FALSE)
+
+pp$ICexpost + 
+  geom_point(data=mean_accuracy,aes(x = ICexpost, y = accuracy, col=as.factor(phaseT)),inherit.aes = FALSE)+
+  theme_minimal()
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_accuracy,
+                               aes(x = ICexpost, y = accuracy, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+# geom_point(data=mean_accuracy,aes(x = ICexpost, y = correct, col=as.factor(sol),shape=as.factor(phaseT), size=2.5),inherit.aes = FALSE)+
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+# c( "#FC4E07","#E7B800"))+
+  # scale_shape_manual(name="IC",values = c(2, 8))+
+  # scale_color_manual(name="Solution",values = c("red", "blue"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_KS_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+### Unsatisfiable instances
+
+```{r}
+dataInput = dataTrial_KS
+dataInput = dataInput %>% filter(sol==0)
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='ks_acc_icexpost2'
+save_summarise_model(allModels[['ks_acc_icexpost2']], tableName)
+
+```
+
+## Plot TCC
+
+```{r}
+
+dataInput = dataTrial_KS
+dataInput = dataInput %>% 
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained"))
+
+dataInput2 = dataInput %>% group_by(instanceNumber,region) %>%
+  summarise(accuracy=mean(correct))
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+plo = ggplot(dataInput2,aes(x=region,y=accuracy,fill=region))+
+  geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("Underconstrained", "Phase Transition", "Overconstrained"),
+                    labels=c("Underconstrained", "Phase Transition", "Overconstrained"),
+                    values=c(rgb(249,199,79, max=255),
+                             rgb(205,54,56, max=255),
+                             rgb(249,199,79, max=255)))+
+  geom_signif(annotations = c("***","***"),
+             y_position=c(1.05,1.05),xmin=c(1.05,2.1),xmax=c(1.9,2.95))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Human Performance")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_KS_acc.pdf"),plo,width = 6,height =6,units="in")
+#brewer
+```
+
+```{r}
+dataInput = dataTrial_KS
+dataInput = dataInput %>%
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained"))%>%
+  mutate(sol= as.factor(sol)) %>%
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput2 = dataInput %>%
+  group_by(instanceNumber,region,sol) %>%
+  summarise(accuracy=mean(correct))
+```
+
+```{r}
+
+plo = ggplot(dataInput2,aes(x=region,y=accuracy,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Human Performance")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_KS_acc1.pdf"),plo,width = 7,height =6,units="in")
+```
+
+# Save Models
+
+```{r}
+# saveRDS(allModels,file.path(folderOut,"ICx3_models_KS.RData"))
+```
+

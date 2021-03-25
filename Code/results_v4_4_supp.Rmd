@@ -1,0 +1,3542 @@
+---
+title: "Behavioural results for the TSP and 3SAT"
+author: "J. Pablo Franco"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_notebook:
+    df_print: paged
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float: yes
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r doc_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{=html}
+<style>
+
+table, td, th {
+  border: none;
+  padding-left: 1em;
+  padding-right: 1em;
+  min-width: 50%;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+</style>
+```
+
+```{r folder_management}
+project_folder = "/Volumes/GoogleDrive/My Drive/Melbourne/UNIMELB/Research/Complexity Project/ICx3_new/Code/behavAnalysis/ICx3_supp/"
+code_folder = paste0(project_folder, "Code/")
+data_folder = paste0(project_folder, "Data/")
+
+setwd(code_folder)
+knitr::opts_knit$set(root.dir = code_folder)
+
+#Import functions
+source(file.path(code_folder,"DescriptiveFunctions.R"))
+
+# Participant Data
+folderModels = "/Volumes/GoogleDrive/My Drive/Melbourne/UNIMELB/Research/Complexity Project/ICx3_new/Code/behavAnalysis/Output/"
+
+folderOut_figures = paste0(project_folder,"Output/Figures")
+folderOut_tables = paste0(project_folder,"Output/Tables")
+
+```
+
+
+```{r}
+# Features of the tasks needed for the analysis
+SATTaskMaxTime=110
+nVars_sat=5
+SATTaskMaxClicks = 20
+
+TSPTaskMaxTime = 40
+
+
+# Brms parameters
+chains_brms = 4
+cores_brms = min(chains_brms,detectCores())
+seed_brms = 111
+iters_high = 4000
+```
+
+
+```{r setup, collapse=TRUE}
+## Setting up the basics
+library(ggplot2)
+#library(stargazer)
+library(knitr)
+library(dplyr)
+library(ggsignif)
+library(pander)
+library(plotly)
+library(reshape2)
+library(Hmisc)
+library(readr)
+library(brms)
+library(parallel)
+library(sjstats)
+library(bayesplot)
+library(bmlm)
+library(DiagrammeR)
+library(tidyr)
+
+#From easystats:
+library(parameters)
+library(see)
+library(bayestestR)
+library(performance)
+
+library(forcats)
+library(ggpol)
+```
+
+```{r}
+# Functions
+
+save_summarise_model = function(model, modelName){
+  if (modelName %in% names(allModels)){
+    warning("Model Name already exists!")
+    model = allModels[[modelName]]
+  } else {
+    allModels[[modelName]]<<- model
+  }
+    table = model_parameters(model, 
+                              ci_method = "HDI",ci=0.95,test = c("hdi","pd"))
+    
+    table2 = performance::model_performance(model,metrics="common")
+
+    plo = plot(hdi(model, ci = c(0.95)), data = model)+
+          ggtitle("Posterior distributions",
+                  "with medians and 95% quantile-based-intervals") +
+          theme(plot.title = element_text(hjust = 0.5),
+                plot.subtitle = element_text(hjust = 0.5))
+  
+    print(as_tibble(table))
+    print(as_tibble(table2))
+    print(plo)
+  
+    #allModels[[modelName]]<<- model
+}
+
+```
+
+```{r}
+# Use current models or rerun everything Comment one option
+
+# allModels := list of all the regressions that are run 
+
+
+## Option1: Use current saved models
+
+# Import estimated models
+allModels = read_rds(file.path(folderModels,"ICx3_models.RData"))
+
+# Don't run brms models
+brm2 =  function(...){
+  return(FALSE)
+}
+
+# ## Option2: Rerun everything from scratch
+# 
+# allModels=vector("list", length=0)
+# 
+# brm2 =  function(...){
+#   return(brm(...))
+# }
+
+```
+
+# Boolean satisfiability problem (3SAT)
+
+## Functions
+
+```{r}
+calculate_sat_ICexpost =function(min_cost,nclauses){
+  ICexpost  =  min_cost/nclauses
+  return(ICexpost)
+}
+```
+
+## Accuracy
+
+Read Clean Data to file
+
+```{r}
+#Import SAT data
+dataTrial_SAT= read_csv2(file.path(data_folder,"SAT_clean.csv"))
+
+dataTrial_SAT_Time = read_csv2(file.path(data_folder,"SAT_clean_time.csv"))
+dataTrial_SAT_Time$timeSpent_pct = dataTrial_SAT_Time$timeSpent/SATTaskMaxTime
+
+color_scheme_set("green")
+
+dataTrial_SAT$censored_time = ifelse(dataTrial_SAT$timeSpent == SATTaskMaxTime,
+                             "right","none")
+
+dataTrial_SAT_Time$censored_time = ifelse(dataTrial_SAT_Time$timeSpent == SATTaskMaxTime,
+                             "right","none")
+
+instanceProperties_SAT= read_rds(paste0(data_folder,"instance_properties_SAT.rds"))
+instanceProperties_SAT = instanceProperties_SAT %>% select(instanceNumber, min_cost, min_model,costs,models,nSolutions)
+
+dataTrial_SAT = left_join(dataTrial_SAT,instanceProperties_SAT, by = "instanceNumber")
+dataTrial_SAT_Time = left_join(dataTrial_SAT_Time,instanceProperties_SAT, by = "instanceNumber")
+
+dataTrial_SAT$ICexpost = calculate_sat_ICexpost(dataTrial_SAT$min_cost,dataTrial_SAT$nClauses)
+dataTrial_SAT_Time$ICexpost = calculate_sat_ICexpost(dataTrial_SAT_Time$min_cost,dataTrial_SAT_Time$nClauses)
+
+#CLicks
+data_SAT_clicks = read_csv2(file.path(data_folder,"SAT_clicks.csv"))
+nClicks = data_SAT_clicks %>% group_by(pID,block,trial) %>% summarise(n_clicks =n())
+
+dataTrial_SAT_clicks=merge(nClicks,
+                  dataTrial_SAT, by=c("pID","block","trial"))
+
+dataTrial_SAT_clicks$censored_clicks = ifelse(dataTrial_SAT_clicks$n_clicks== SATTaskMaxClicks,
+                             "right","none")
+
+```
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_SAT
+
+accuracySummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(accuracySummary, digits=2, caption = "Accuracy Summary")
+
+answerSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(answer)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(answerSummary, digits=2, caption = "Proportion of times that YES was selected as the answer")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=2, caption = "Accuracy By Solution")
+
+```
+
+### Effect of Trial number on accuracy
+
+```{r}
+#Trial (experience effect) effect
+dataInput=dataTrial_SAT
+
+#Summary
+summaryByBlock = dataInput %>% group_by(block,pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(summaryByBlock, digits=2, caption = "Accuracy By Block Number")
+
+#Regresssion
+dataInput$totalTrial = dataInput$block * dataInput$trial
+
+logitRandomIntercept = brm2(correct ~ totalTrial+ (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='sat_acc_01_r'
+
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+### TCC Accuracy Contrast
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT %>% group_by(phaseT,pID)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(phaseT)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput$phaseT = recode(dataInput$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput, aes(y=accuracy, x=as.factor(phaseT),label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  #geom_signif(comparisons = list(c("Low IC","High IC")), annotations="***", y_position = 0.95, tip_length = 0.03)+
+  labs(title="Accuracy In and Out of phase Transition",x="Instance complexity",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white")+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = 'sat_acc_02_g'
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT
+
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ phaseT + (1|pID),
+                           family=bernoulli(link="logit"),#binomial(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+
+tableName='sat_acc_02_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+#### Plot TCC
+
+```{r}
+dataInput = dataTrial_SAT
+dataInput = dataInput %>% 
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained"))%>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput2 = dataInput %>% 
+  group_by(instanceNumber,region,sol) %>% 
+  summarise(accuracy=mean(correct))
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+
+plo = ggplot(dataInput2,aes(x=region,y=accuracy,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Human Performance")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_SAT_acc.pdf"),plo,width = 7,height =6,units="in")
+#brewer
+```
+
+### Satisifability and TCC
+
+```{r , fig.align='center'}
+
+dataInput=dataTrial_SAT %>% group_by(phaseT,sol,pID)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(sol,phaseT)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+sol_names <- c(
+                    `0` = "Correct answer: NO",
+                    `1` = "Correct answer: YES",
+                    `2` = "If this is here it means data not filtered"
+                    )
+
+plo=ggplot(data=dataInput, aes(y=accuracy, x=as.factor(as.logical(phaseT)), label = round(accuracy,digits = 2),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Accuracy segregated by solvability",x="In Phase Transition?",y="Accuracy")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")+
+  facet_grid(.~sol, labeller = as_labeller(sol_names))
+
+outputName = 'sat_acc_03_g'
+plotExport(plo,outputName,folderOut_figures)
+```
+
+```{r}
+dataInput= dataTrial_SAT
+dataInput$phaseT = as.factor(dataInput$phaseT)
+dataInput$sol = as.factor(dataInput$sol)
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ phaseT + sol + phaseT:sol + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,                            seed=seed_brms,                            refresh = 0)
+
+tableName='sat_acc_03_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+Marginal effects
+
+```{r}
+
+#marginal_effects(logitRandomIntercept, ask=FALSE)
+plot(marginal_effects(allModels[['sat_acc_03_r']]), plot = TRUE, ask = FALSE)
+
+```
+
+Effect of TCC on satisfiable instances
+
+```{r}
+# st01
+model = allModels[['sat_acc_03_r']]
+
+fit = hypothesis(model,"phaseT1+ phaseT1:sol1=0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+
+```
+
+#### Satisfiability alone
+
+```{r}
+dataInput= dataTrial_SAT
+dataInput$sol = as.factor(dataInput$sol)
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ sol + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,                            seed=seed_brms,                            refresh = 0)
+
+tableName='sat_acc_03B_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+### Region effect on Accuracy
+Overconstrained - Underconstrained - Satisfiability threshold
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT
+
+# dataInput$pID=as.character(dataInput$pID)
+# ps = sample(pull(dataInput,pID),20)
+# dataInput = dataInput %>% filter(pID %in% ps)
+
+
+dataInput2=dataInput %>% group_by(region,pID)%>%summarise(accuracy1=mean(correct))%>%
+  ungroup()%>%group_by(region)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+plo= ggplot(data=dataInput2, aes(y=accuracy, x=region, label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  labs(title="Accuracy by region",x="Region",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = 'sat_acc_04_g'
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+
+```
+
+```{r}
+
+logitRandomIntercept = brm2(correct ~ overConstrained + underConstrained + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='sat_acc_04_r_A'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+Is there a difference between accuracy in the overconstrained region and
+the underconstrained region?
+
+```{r}
+
+fit = hypothesis(allModels[['sat_acc_04_r_A']],"overConstrainedTRUE=underConstrainedTRUE", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+
+```
+
+**Region Effect on Accuracy by region and Satisfiability**
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT 
+
+# dataInput$pID=as.character(dataInput$pID)
+# ps = sample(pull(dataInput,pID),20)
+# dataInput = dataInput %>% filter(pID %in% ps)
+
+dataInput2=dataInput %>% group_by(region,pID,sol)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(region,sol)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+dataInput2$sol = recode(dataInput2$sol, '1' = "Solvable", '0' = "Non-Solvable")
+
+plo= ggplot(data=dataInput2, aes(y=accuracy, x=region, label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  #geom_signif(annotations = c("***","***"),
+  #            y_position=c(0.95,0.95),xmin=c(1.1,2.1),xmax=c(1.9,2.9))+
+  #geom_signif(comparisons = list(c("Underconstrained","Overconstrained")),
+  #             annotations="NS", y_position = 0.99, tip_length = 0.03)+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  labs(title="Accuracy by region",x="Region",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))+
+  facet_grid(.~sol)
+
+
+outputName = 'sat_acc_04_g'
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+
+```
+
+### Number of solutions witnesses that satisfy the constraints {#sat_acc_nsol}
+
+```{r, fig.align='center'}
+dataInput=dataTrial_SAT
+#dataInput=nSolutions_sat(dataInput)
+
+#Plots nSolutions (x) vs. Accuracy (y)
+dataInput3 = dataInput %>% group_by(nSolutions,pID,phaseT)%>%summarise(accuracyMeans=mean(correct))%>%ungroup()%>%group_by(nSolutions,phaseT)%>%summarise(accuracy=mean(accuracyMeans),se=se(accuracyMeans))%>%ungroup()
+
+dataInput3$sol = dataInput3$nSolutions>=1
+dataInput3$phaseT = recode(dataInput3$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput3, aes(y=accuracy, x=as.factor(nSolutions))) +
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  geom_point(shape=23, size=3, fill="red")+
+  labs(title="Accuracy and the Number of Solutions",
+       x="Number of   Solutions",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),strip.text.x = element_blank())+
+  facet_grid(phaseT~sol, scales = "free_x", space = "free_x")+
+  geom_smooth(data=dataInput3, aes(y=accuracy, x=nSolutions),method=glm,se=FALSE,fullrange=TRUE,linetype = "dashed")
+
+outputName = 'sat_acc_05_g'
+plotExport(plo,outputName,folderOut_figures)
+```
+
+Difference in the number of solutions of instances High/Low TCC (clearly, only for solvable instances)
+
+```{r}
+
+dataInput2 = unique(dataInput %>% select(phaseT,id,nSolutions,sol) %>% filter(sol==1))
+diffMeans = t.test(nSolutions ~ phaseT ,data=dataInput2)
+pander(diffMeans)
+
+```
+
+Regression for the number of witnesses analysis:
+`correct ~ sol + phaseT + nSolutions + phaseT:nSolutions + (1|pID)`
+
+```{r}
+dataInput = dataInput %>% filter(sol==1)
+
+#Includes a dummy if nSolutions==0, that's variable: sol.
+logitRandomIntercept = brm2(correct ~ phaseT + nSolutions + phaseT:nSolutions + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,                            seed=seed_brms, refresh = 0)
+
+tableName='sat_acc_05_r_A'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+This calculates the significance of the beta(slope) of the numberOfSolutions for high TCC instances.
+
+```{r}
+#This version recodes phaseT to OutphaseT, to 
+
+fit = hypothesis(allModels[['sat_acc_05_r_A']],"nSolutions + phaseT:nSolutions = 0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+```
+
+Marginal Effects
+
+```{r}
+
+plot(marginal_effects(allModels[['sat_acc_05_r_A']]), plot = TRUE, ask = FALSE)
+
+```
+
+#### NSol (regressed alone)
+
+```{r}
+#st02
+dataInput = dataTrial_SAT
+dataInput = dataInput %>% filter(sol==1)
+
+#Includes a dummy if nSolutions==0, that's variable: sol.
+logitRandomIntercept = brm2(correct ~ nSolutions + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='sat_acc_05_r_B'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+```{r}
+mean_acc = dataInput %>% group_by(instanceNumber,nSolutions, sol,phaseT) %>%
+  summarise(accuracy=mean(correct)) 
+
+logitRandomIntercept = allModels[['sat_acc_05_r_B']]
+pp  = plot(conditional_effects(logitRandomIntercept), plot = FALSE, ask = FALSE)
+
+pp$nSolutions + 
+  geom_point(data=mean_acc,aes(x = nSolutions, y = accuracy),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_acc,
+                               aes(x = nSolutions, y = accuracy, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  scale_x_continuous(breaks = c(1,3,5,7,9),limits =c(1,10))+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_SAT_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+#### NSol (with TCC and no interaction)
+
+```{r}
+#st03
+dataInput = dataTrial_SAT
+dataInput = dataInput %>% filter(sol==1)
+
+logitRandomIntercept = brm2(correct ~ nSolutions + phaseT + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='sat_acc_05_r_C'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+### IC_expost {#sat_acc_ICexpost}
+
+```{r, fig.align='center'}
+dataInput = dataTrial_SAT
+
+# Summarise the data to plot
+mean_accuracy = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(accuracy = mean(correct))
+
+ggplot(mean_accuracy, aes(x = ICexpost, y = accuracy))+
+  geom_point() +
+  theme_light() +
+  stat_smooth(formula =  y ~ I(x^0.01), method="lm", se= FALSE)+
+  xlab("IC_expost")+
+  ylab("Human Accuracy")
+
+```
+
+```{r}
+dataInput = dataTrial_SAT
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='sat_acc_icexpost_all'
+save_summarise_model(model_ICexpost, tableName)
+```
+
+```{r}
+mean_accuracy$correct= mean_accuracy$accuracy
+
+model_ICexpost = allModels[['sat_acc_icexpost_all']]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost + 
+  geom_point(data=mean_accuracy,aes(x = ICexpost, y = correct),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_accuracy,
+                               aes(x = ICexpost, y = correct, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_SAT_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+plo = pp$ICexpost +
+geom_point(data=mean_accuracy,aes(x = ICexpost, y = correct, col=as.factor(phaseT),shape=as.factor(phaseT), size=2.5),inherit.aes = FALSE)+
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c( "#FC4E07","#E7B800"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_SAT_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+Model Fit
+
+```{r}
+model_ICexpost = allModels[['sat_acc_icexpost_all']]
+dataInput = dataTrial_SAT
+
+# Make predictions excluding random effects (pID)
+predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+
+
+# Estimating the significance of the fit. This is done considering the probability estimation rather than the binary classification.
+
+#Performs the Hosmer-Lemeshow goodness of fit test
+logistic_significance = generalhoslem::logitgof(dataInput$correct, predictions[,1], g = 10, ord = FALSE)
+logistic_significance
+
+# Finds R2 using binary outcomes
+# https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+#predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+#r_2_binary = cor(dataInput$ICexpost, predictions[,1])^2
+r_2_binary = cor(dataInput$correct, predictions[,1])^2
+r_2_binary
+
+# Finds R2 using mean accuracies per instance
+predictions2 = predict(model_ICexpost,mean_accuracy, re_formula = NA)
+r_2_probabilities = cor(mean_accuracy$accuracy, predictions2[,1])^2
+r_2_probabilities
+```
+
+#### Only unsatisfiable instances
+
+```{r}
+dataInput = dataTrial_SAT
+dataInput = dataInput %>% filter(sol==0)
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='sat_acc_icexpost'
+save_summarise_model(model_ICexpost, tableName)
+```
+
+```{r}
+mean_accuracy2 = dataInput %>% 
+  filter(sol == 0) %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(accuracy = mean(correct))
+
+mean_accuracy2$correct= mean_accuracy2$accuracy
+
+model_ICexpost = allModels[['sat_acc_icexpost']]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost + 
+  geom_point(data=mean_accuracy2,aes(x = ICexpost, y = correct),inherit.aes = FALSE)
+```
+
+Model Fit
+
+```{r}
+model_ICexpost = allModels[['sat_acc_icexpost']]
+#st05
+dataInput = dataTrial_SAT %>% filter(sol==0)
+
+# Make predictions excluding random effects (pID)
+predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+
+
+# Estimating the significance of the fit. This is done considering the probability estimation rather than the binary classification.
+
+#Performs the Hosmer-Lemeshow goodness of fit test
+logistic_significance = generalhoslem::logitgof(dataInput$correct, predictions[,1], g = 10, ord = FALSE)
+logistic_significance
+
+# Finds R2 using binary outcomes
+# https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+#predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+r_2_binary = cor(dataInput$correct, predictions[,1])^2
+r_2_binary
+
+# Finds R2 using mean accuracies per instance
+predictions2 = predict(model_ICexpost,mean_accuracy2, re_formula = NA)
+r_2_probabilities = cor(mean_accuracy2$accuracy, predictions2[,1])^2
+r_2_probabilities
+```
+
+## Time Spent
+
+The default data used in this section is `dataTrial_SAT_Time`. This dataset excludes those participants that never skipped to answer submission.
+
+We first calculate some summary stats for the whole data set (`dataTrial_SAT`) and see how many participants were excluded in `dataTrial_SAT_Time`.
+
+#### SummStats `SAT`
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_SAT
+
+timeSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(timeSummary, digits=1, caption = "Time Summary")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=1, caption = "Time Spent By Solution")
+
+hist(dataInput$timeSpent,breaks=40)
+
+```
+
+```{r}
+all_pIDs = unique(dataTrial_SAT$pID)
+pIDs_not_in_Time = all_pIDs[!(all_pIDs %in% unique(dataTrial_SAT_Time$pID))]
+print(paste0("The participants removed in the TIME df are ", length(pIDs_not_in_Time)))
+
+
+obs_removed = nrow(dataTrial_SAT)-nrow(dataTrial_SAT_Time)
+print(paste0("The number of observations removed in the TIME df is ", obs_removed))
+
+```
+
+#### SummStats `SAT_Time`
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_SAT_Time
+
+timeSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(timeSummary, digits=1, caption = "Time Summary")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=1, caption = "Time Spent By Solution")
+
+hist(dataInput$timeSpent,breaks=40)
+
+```
+
+#### Effect of Trial Number on Time-on-task
+
+```{r}
+#Trial (experience effect) effect on timeSpent
+dataInput=dataTrial_SAT_Time
+dataInput$totalTrial = dataInput$block * dataInput$trial
+
+summaryByBlock = dataInput %>% group_by(block,pID) %>% summarise(time=mean(timeSpent)) %>% summarise(mean=mean(time),min=min(time),max=max(time),SD=sd(time))
+kable(summaryByBlock,digits=2 , caption="Time Spent per Trial segregated By Block")
+
+#Regression
+linearRandomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ totalTrial,
+                            data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0, iter = iters_high,
+                           control = list(adapt_delta = 0.98))
+
+tableName='sat_time_01_r'
+save_summarise_model(linearRandomIntercept, tableName)
+
+```
+
+### TCC
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT_Time %>% group_by(phaseT,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput$phaseT = recode(dataInput$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput, aes(y=timeSpent, x=as.factor(phaseT),label = round(timeSpent,digits = 1))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  #geom_signif(comparisons = list(c("Low IC","High IC")), annotations="***", y_position = 0.95, tip_length = 0.03)+
+  labs(title="Time Spent In and Out of phase Transition",x="Instance complexity",y="Time Spent")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white")+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = "sat_time_02_g"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT_Time
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(timeSpent| cens(censored_time) ~ phaseT + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_time_02_r"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+##### Plot TCC
+
+```{r}
+
+dataInput = dataTrial_SAT_Time %>%
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained")) %>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput$timeSpent_pct = dataInput$timeSpent/SATTaskMaxTime
+dataInput2 = dataInput %>% 
+  group_by(instanceNumber,region,sol, phaseT) %>% 
+  summarise(timeSpent_pct=median(timeSpent_pct))
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+plo = ggplot(dataInput2,aes(x=region,y=timeSpent_pct,fill=sol))+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape =NA)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Time-on-task")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(0.15,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_SAT_time.pdf"),plo,width = 7,height =6,units="in")
+```
+
+### Satsifiability and TCC
+
+```{r , fig.align='center'}
+
+dataInput=dataTrial_SAT_Time %>% group_by(phaseT,sol,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(sol,phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+sol_names <- c(
+                    `0` = "Correct answer: NO",
+                    `1` = "Correct answer: YES",
+                    `2` = "If this is here it means data not filtered"
+                    )
+
+plo=ggplot(data=dataInput, aes(y=timeSpent, x=as.factor(as.logical(phaseT)), 
+                               label = round(timeSpent,digits = 1),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Time Spent segregated by solvability",x="In Phase Transition?",y="Time Spent")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")+
+  facet_grid(.~sol, labeller = as_labeller(sol_names))
+
+outputName = "sat_time_03_g"
+plotExport(plo,outputName,folderOut_figures)
+```
+
+```{r}
+dataInput= dataTrial_SAT_Time
+#logistic with random effects (intercept)
+dataInput$sol =as.factor(dataInput$sol)
+dataInput$phaseT = as.factor(dataInput$phaseT)
+
+# TTTODO
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ phaseT + sol + phaseT:sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+title="Linear regressions"
+tableName="sat_time_03_r"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+Marginal Effects
+
+```{r}
+#marginal_effects(randomIntercept, ask=FALSE)
+plot(marginal_effects(allModels[["sat_time_03_r"]]), plot = TRUE, ask = FALSE)
+
+```
+
+### Satisfiability
+
+```{r}
+#st06
+dataInput= dataTrial_SAT_Time
+#logistic with random effects (intercept)
+#dataInput$sol =as.factor(dataInput$sol)
+
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_time_03_r_B"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+### Region effect on time-on-task (Constrainedness)
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT_Time #%>% mutate(region=recode(type, `1`= 'Phase Transition', `2`= 'Phase Transition', `3`= 'Phase Transition', `4`='Phase Transition', '5'='Overconstrained', '6'='Underconstrained'))
+
+dataInput2=dataInput %>% group_by(region,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(region)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+plo= ggplot(data=dataInput2, aes(y=timeSpent, x=region, label = round(timeSpent,digits = 1))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  labs(title="time Spent by region",x="Region",y="time Spent")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = "sat_time_04_g"
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+
+```
+
+```{r}
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ overConstrained + underConstrained + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_time_04_g_A"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+Is there a difference between time-on-task between the overconstrained region and the underconstrained region?
+
+```{r}
+fit = hypothesis(allModels[["sat_time_04_g_A"]],"overConstrainedTRUE=underConstrainedTRUE", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+```
+
+### Number of solution witnesses that satisfy the constraints {#sat_time_nsol}
+
+#### No. witnesses and TCC
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT_Time
+
+#Plots nSolutions (x) vs. Accuracy (y)
+dataInput3 = dataInput %>% group_by(nSolutions,pID,phaseT)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(nSolutions,phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput3$sol = dataInput3$nSolutions>=1
+dataInput3$phaseT = recode(dataInput3$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput3, aes(y=timeSpent, x=as.factor(nSolutions))) +
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  geom_point(shape=23, size=3, fill="red")+
+  labs(title="Time Spent and the Number of Solutions",
+       x="Number of   Solutions",y="Time Spent")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),strip.text.x = element_blank())+
+  facet_grid(phaseT~sol, scales = "free_x", space = "free_x")+
+  geom_smooth(data=dataInput3, aes(y=timeSpent, x=nSolutions),method=glm,
+              se=FALSE,fullrange=TRUE,linetype = "dashed")
+
+outputName = "sat_time_05_g"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+
+```{r}
+
+# For satisfiable instance only
+dataInput = dataInput %>% filter(sol==1)
+
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ phaseT + nSolutions + phaseT:nSolutions + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_time_05_r_A"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+This calculates the significance of the beta(slope) of the number of witnesses for instances with high TCC.
+
+```{r}
+#This version recodes phaseT to OutphaseT, to 
+
+fit = hypothesis(allModels[["sat_time_05_r_A"]],"nSolutions + phaseT:nSolutions = 0", seed=seed_brms)
+
+#fit = hypothesis(randomIntercept,"nSolutions = 0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+
+#summary(randomIntercept)
+
+```
+
+Marginal Effects
+
+```{r}
+plot(marginal_effects(allModels[["sat_time_05_r_A"]]), plot = TRUE, ask = FALSE)
+
+```
+
+#### NSol (Regressed alone)
+
+```{r}
+#st07
+dataInput= dataTrial_SAT_Time
+dataInput = dataInput %>% filter(sol==1)
+#logistic with random effects (intercept)
+#dataInput$sol =as.factor(dataInput$sol)
+
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~  nSolutions + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_time_05_r_B"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+```{r}
+#dataInput3
+mean_acc = dataInput %>% group_by(instanceNumber,nSolutions, sol,phaseT) %>%
+  summarise(accuracy=mean(correct),
+            timeSpent_med =median(timeSpent)) 
+
+logitRandomIntercept = allModels[['sat_time_05_r_B']]
+pp  = plot(conditional_effects(logitRandomIntercept,
+           probs = c(0.025,0.975)), plot = FALSE, ask = FALSE)
+
+pp$nSolutions + 
+  geom_point(data=mean_acc,aes(x = nSolutions, y = timeSpent_med/SATTaskMaxTime),inherit.aes = FALSE)
+
+
+```
+
+```{r}
+# Improving the plot
+
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_boxplot(data=dataInput,
+                                      aes(x = nSolutions, 
+                                          group = nSolutions, 
+                                          y = timeSpent_pct), 
+                                      inherit.aes = FALSE),
+                        geom_point(data=mean_acc, 
+                                   aes(x = nSolutions, y = timeSpent_med/SATTaskMaxTime,
+                                       col=as.factor(sol), shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(0, 1)+
+  scale_x_continuous(breaks = c(1,3,5,7,9),limits =c(0.5,10.5))+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_SAT_time.pdf"),plo,width = 6,height =6,units="in")
+```
+
+```{r}
+# Improving the plot
+
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = TRUE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=dataInput,
+                               aes(x = nSolutions, y = timeSpent_pct,
+                                   shape=as.factor(phaseT), size=0.4,
+                                   alpha = 0.5),
+                                   inherit.aes = FALSE),
+                    geom_point(data=mean_acc, 
+                                   aes(x = nSolutions, 
+                                       y = timeSpent_med/SATTaskMaxTime,
+                                       col=as.factor(sol),
+                                       shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+#c( "#FC4E07","#E7B800")
+  # scale_shape_manual(name="IC",values = c(2, 8))+
+  # scale_color_manual(name="Solution",values = c("red", "blue"))+
+  theme_classic()+
+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(0, 1)+
+  scale_x_continuous(breaks = c(1,3,5,7,9),limits =c(0.5,10.5))+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_SAT_time2.pdf"),plo,width = 6,height =6,units="in")
+```
+
+### IC_expost (distance from the optimum) {#sat_time_ICexpost}
+
+```{r, fig.align='center'}
+dataInput = dataTrial_SAT_Time
+# Summarise the data to plot
+mean_accuracy_time = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(accuracy = mean(correct), 
+            timeSpent_med = median(timeSpent),
+            timeSpent = mean(timeSpent))
+
+ggplot(mean_accuracy_time,aes(x = ICexpost, y = timeSpent))+
+  geom_point() +
+  theme_light() +
+  stat_smooth(formula =  y ~ I(x^0.01), method="lm", se= FALSE)+
+  xlab("IC_expost")+
+  ylab("Time Spent")
+
+```
+
+##### Unsatisfiable instances
+
+```{r}
+dataInput = dataTrial_SAT_Time %>% filter(sol==0)
+
+model_ICexpost = brm2(timeSpent_pct | cens(censored_time) ~ ICexpost + (1|pID),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0, iter = iters_high)
+
+tableName='sat_time_icexpost'
+save_summarise_model(model_ICexpost, tableName)
+
+
+```
+
+##### All instances
+
+```{r}
+dataInput = dataTrial_SAT_Time
+
+model_ICexpost = brm2(timeSpent_pct | cens(censored_time) ~ ICexpost + (1|pID),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0, iter = iters_high)
+
+tableName='sat_time_icexpost2'
+save_summarise_model(model_ICexpost, tableName)
+```
+
+Marginal Effects
+
+```{r}
+mean_accuracy_time$correct= mean_accuracy_time$accuracy
+#mean_accuracy_time$ICexpost05 = mean_accuracy_time$ICexpost^0.5
+
+model_ICexpost = allModels[['sat_time_icexpost2']]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost + 
+  geom_point(data=mean_accuracy_time,aes(x = ICexpost, y = timeSpent/SATTaskMaxTime),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot option 2
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = TRUE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=dataInput,
+                               aes(x = ICexpost, y = timeSpent_pct,
+                                   shape=as.factor(phaseT), size=0.4,
+#                                   col=as.factor(sol),
+                                   alpha = 0.2),
+                                   inherit.aes = FALSE),
+                    geom_point(data=mean_accuracy_time, 
+                                   aes(x = ICexpost, 
+                                       y = timeSpent_med/SATTaskMaxTime,
+                                       col=as.factor(sol),
+                                       shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+#c( "#FC4E07","#E7B800")
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(0, 1.1)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1))+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_SAT_time1.pdf"),plo,width = 6,height =6,units="in")
+
+```
+
+## Time-on-task and Accuracy
+
+```{r, fig.align='center'}
+
+dataInput= dataTrial_SAT_Time %>% group_by(correct,pID) %>% summarise(timeSpentMeans=mean(timeSpent)) %>% ungroup() %>% group_by(correct) %>%
+  summarise(time=mean(timeSpentMeans),se=se(timeSpentMeans))%>%ungroup()
+
+plo = ggplot(data=dataInput, aes(y=time, x=as.factor(as.logical(correct)), label = round(time,digits = 2),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=time-se, ymax=time+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Time Spent on Correct/Incorrect instances",x="Answer Correct?",y="Time Spent") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")
+
+outputName = "sat_time_09_g"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+dataInput = dataTrial_SAT_Time
+#Stats test for time for correct/incorrect answers
+logitRandomIntercept = brm2(correct ~ timeSpent_pct + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+
+tableName="sat_time_09_r"
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+
+## Number of Clicks
+
+#### Satisfiability
+
+```{r , fig.align='center'}
+dataInput=dataTrial_SAT_clicks
+
+# BOXPLOT
+plo= ggplot(data=dataInput, aes(y=n_clicks, x=region, label = round(n_clicks,digits = 0))) +
+  geom_boxplot()+
+  labs(x="Region",y="n_clicks")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))+
+  facet_grid(.~sol)
+
+
+outputName = 'sat_acc_04_g'
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+Nice Plot:
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+dataInput2 = dataTrial_SAT_clicks %>% 
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained"))%>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput3 = dataInput2 %>% 
+  group_by(instanceNumber,region,sol) %>% 
+  summarise(n_clicks=mean(n_clicks))
+
+plo = ggplot(dataInput3,aes(x=region,y=n_clicks,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Number of clicks")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0,20)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_SAT_nclicks.pdf"),plo,width = 7,height =6,units="in")
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_01_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+#### TCC
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ phaseT + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_02_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+##### And Satisfiability
+
+```{r}
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+dataInput$phaseT = as.factor(dataInput$phaseT)
+dataInput$sol = as.factor(dataInput$sol)
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ phaseT + sol + phaseT:sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_02B_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+pp  = plot(conditional_effects(allModels[["sat_clicks_02B_r"]]), plot = TRUE, ask = FALSE)
+```
+
+#### ICexpost
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ ICexpost + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_03_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+dataInput = dataTrial_SAT_clicks
+# Summarise the data to plot
+mean_nclicks = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(n_clicks = median(n_clicks))
+
+model_ICexpost = allModels[["sat_clicks_03_r"]]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost +
+  geom_point(data=mean_nclicks,aes(x = ICexpost, y =n_clicks),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_nclicks,
+                               aes(x = ICexpost, y = n_clicks, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Number of Clicks")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_SAT_nclicks.pdf"),plo,width = 6,height =6,units="in")
+```
+
+Only Unsatisfiable:
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_SAT_clicks %>% filter(sol==0)
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ ICexpost + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_03_rB"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+dataInput= dataTrial_SAT_clicks #%>% filter(sol==0)
+# Summarise the data to plot
+mean_nclicks = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(n_clicks = median(n_clicks))
+
+model_ICexpost = allModels[["sat_clicks_03_rB"]]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost +
+  geom_point(data=mean_nclicks,aes(x = ICexpost, y =n_clicks),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_jitter(data=dataInput,
+                               aes(x = ICexpost, y = n_clicks,
+                                   shape=as.factor(phaseT), size=0.4,
+#                                   col=as.factor(sol),
+                                   alpha = 0.2),
+                                   inherit.aes = FALSE,height=0.2),
+                        geom_point(data=mean_nclicks, 
+                                   aes(x = ICexpost, y = n_clicks,
+                                       col=as.factor(sol), shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Number of Clicks")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+ 
+  xlim(0,0.09)
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_SAT_nclicks_unsat.pdf"),plo,width = 6,height =6,units="in")
+```
+
+##### And Satisfiability
+
+```{r}
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+dataInput$unsol = abs(dataInput$sol-1)
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ unsol + unsol:ICexpost + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_03_rC"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+pp  = plot(conditional_effects(allModels[["sat_clicks_03_rC"]]), plot = TRUE, ask = FALSE)
+```
+
+#### Nsolutions
+
+```{r}
+dataInput= dataTrial_SAT_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ nSolutions + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_04_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+Only Satisfiable:
+
+```{r}
+dataInput= dataTrial_SAT_clicks %>% filter(sol==1)
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks| cens(censored_clicks) ~ nSolutions + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="sat_clicks_04_rB"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+#dataInput = dataTrial_SAT_clicks
+# Summarise the data to plot
+mean_nclicks = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(n_clicks = median(n_clicks))
+
+model_ICexpost = allModels[["sat_clicks_04_rB"]]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$nSolutions +
+  geom_point(data=mean_nclicks,aes(x = nSolutions, y =n_clicks),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_jitter(data=dataInput,
+                               aes(x = nSolutions, y = n_clicks,
+                                   shape=as.factor(phaseT), size=0.4,
+#                                   col=as.factor(sol),
+                                   alpha = 0.2),
+                                   inherit.aes = FALSE,width=0.2,height =0.2),
+                        geom_point(data=mean_nclicks, 
+                                   aes(x = nSolutions, y = n_clicks,
+                                       col=as.factor(sol), shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Number of Solution Witnesses")+
+  ylab("Number of Clicks")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_SAT_nclicks.pdf"),plo,width = 6,height =6,units="in")
+```
+
+# Traveling salesperson Problem
+
+## Functions
+
+```{r}
+calculate_tsp_ICexpost =function(opt,max_dist){
+  ICexpost  =  abs(opt- max_dist)/opt
+  return(ICexpost)
+}
+```
+
+## Accuracy
+
+Read Clean Data to file
+
+```{r}
+
+dataTrial_TSP= read_csv2(file.path(data_folder,"TSP_clean.csv"))
+
+dataTrial_TSP_Time = read_csv2(file.path(data_folder,"TSP_clean_time.csv"))
+dataTrial_TSP_Time$timeSpent_pct = dataTrial_TSP_Time$timeSpent/TSPTaskMaxTime
+
+color_scheme_set("purple")
+
+dataTrial_TSP$censored_time = ifelse(dataTrial_TSP$timeSpent == TSPTaskMaxTime,
+                             "right","none")
+
+dataTrial_TSP_Time$censored_time = ifelse(dataTrial_TSP_Time$timeSpent == TSPTaskMaxTime,
+                             "right","none")
+
+instanceProperties_TSP= read_csv2(paste0(data_folder,"instance_properties_TSP.csv"))
+
+instanceProperties_TSP =instanceProperties_TSP %>% 
+  select(instanceNumber,nSolutions,opt_distance,opt_tour,dist_from_opt)
+
+dataTrial_TSP = left_join(dataTrial_TSP,instanceProperties_TSP, by = "instanceNumber")
+dataTrial_TSP_Time = left_join(dataTrial_TSP_Time,instanceProperties_TSP, by = "instanceNumber")
+
+dataTrial_TSP$ICexpost = calculate_tsp_ICexpost(dataTrial_TSP$opt_distance,
+                                          dataTrial_TSP$max_distance)
+
+dataTrial_TSP_Time$ICexpost = calculate_tsp_ICexpost(dataTrial_TSP_Time$opt_distance,
+                                          dataTrial_TSP_Time$max_distance)
+
+
+data_TSP_clicks = read_csv2(file.path(data_folder,"TSP_clicks.csv"))
+
+nClicks = data_TSP_clicks %>% group_by(pID,block,trial) %>% summarise(n_clicks =n())
+#View(nClicks)
+
+dataTrial_TSP_clicks=merge(nClicks,
+                  dataTrial_TSP, by=c("pID","block","trial"))
+```
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_TSP
+
+accuracySummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(accuracySummary, digits=2, caption = "Accuracy Summary")
+
+answerSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(answer)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(answerSummary, digits=2, caption = "Proportion of times that YES was selected as the answer")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=2, caption = "Accuracy By Solution")
+
+```
+
+### Effect of trial number on accuracy
+
+```{r}
+#Trial (experience effect) effect
+dataInput=dataTrial_TSP
+
+#Summary
+summaryByBlock = dataInput %>% group_by(block,pID) %>% summarise(acc=mean(correct)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(summaryByBlock, digits=2, caption = "Accuracy By Block Number")
+
+#Regresssion
+dataInput$totalTrial = dataInput$block * dataInput$trial
+
+logitRandomIntercept = brm2(correct ~ totalTrial+ (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='tsp_acc_01_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+### TCC
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP %>% group_by(phaseT,pID)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(phaseT)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput$phaseT = recode(dataInput$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput, aes(y=accuracy, x=as.factor(phaseT),label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  #geom_signif(comparisons = list(c("Low IC","High IC")), annotations="***", y_position = 0.95, tip_length = 0.03)+
+  labs(title="Accuracy In and Out of phase Transition",x="Instance complexity",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white")+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = 'tsp_acc_02_g'
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP
+
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ phaseT + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_02_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+#### Plot TCC
+
+```{r}
+dataInput = dataTrial_TSP
+
+dataInput = dataInput %>% 
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained")) %>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput2 = dataInput %>% 
+  group_by(instanceNumber,region,sol) %>% 
+  summarise(accuracy=mean(correct))
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+
+plo = ggplot(dataInput2,aes(x=region,y=accuracy,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Human Performance")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_TSP_acc.pdf"),plo,width = 7,height =6,units="in")
+```
+
+### Satsifiability and TCC
+
+```{r , fig.align='center'}
+
+dataInput=dataTrial_TSP %>% group_by(phaseT,sol,pID)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(sol,phaseT)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+sol_names <- c(
+                    `0` = "Correct answer: NO",
+                    `1` = "Correct answer: YES",
+                    `2` = "If this is here it means data not filtered"
+                    )
+
+plo=ggplot(data=dataInput, aes(y=accuracy, x=as.factor(as.logical(phaseT)), label = round(accuracy,digits = 2),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Accuracy segregated by solvability",x="In Phase Transition?",y="Accuracy")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")+
+  facet_grid(.~sol, labeller = as_labeller(sol_names))
+
+outputName = 'tsp_acc_03_g'
+plotExport(plo,outputName,folderOut_figures)
+```
+
+```{r}
+dataInput= dataTrial_TSP
+
+dataInput$phaseT = as.factor(dataInput$phaseT)
+dataInput$sol = as.factor(dataInput$sol)
+
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ phaseT + sol + phaseT:sol + (1|pID), 
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_03_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+Marginal effects
+
+```{r}
+plot(marginal_effects(allModels[['tsp_acc_03_r']]), plot = TRUE, ask = FALSE)
+
+```
+
+Effect of TCC on satisfiable instances
+
+```{r}
+#st01
+model = allModels[['tsp_acc_03_r']]
+
+fit = hypothesis(model,"phaseT1+ phaseT1:sol1=0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+```
+
+#### Only satisfiability
+
+```{r}
+dataInput= dataTrial_TSP
+dataInput$sol = as.factor(dataInput$sol)
+
+#logistic with random effects (intercept)
+logitRandomIntercept = brm2(correct ~ sol + (1|pID), 
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_03B_r'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+### Region effect on Accuracy (Constrainedness)
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP
+
+dataInput2=dataInput %>% group_by(region,pID)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(region)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+plo= ggplot(data=dataInput2, aes(y=accuracy, x=region, label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  labs(title="Accuracy by region",x="Region",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = 'tsp_acc_04_g'
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+
+```
+
+```{r}
+logitRandomIntercept = brm2(correct ~ overConstrained + underConstrained + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,                            seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_04_r_A'
+save_summarise_model(logitRandomIntercept, tableName)
+
+```
+
+Is there a difference between accuracy in the overconstrained region and
+the underconstrained region?
+
+```{r}
+
+fit = hypothesis(allModels[['tsp_acc_04_r_A']],"overConstrainedTRUE=underConstrainedTRUE", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+
+```
+
+**Region effect on accuracy by region and satisfiability**
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP 
+
+# dataInput$pID=as.character(dataInput$pID)
+# ps = sample(pull(dataInput,pID),20)
+# dataInput = dataInput %>% filter(pID %in% ps)
+
+dataInput2=dataInput %>% group_by(region,pID,sol)%>%summarise(accuracy1=mean(correct))%>%ungroup()%>%group_by(region,sol)%>%summarise(accuracy=mean(accuracy1),se=se(accuracy1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+dataInput2$sol = recode(dataInput2$sol, '1' = "Solvable", '0' = "Non-Solvable")
+
+plo= ggplot(data=dataInput2, aes(y=accuracy, x=region, label = round(accuracy,digits = 2))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  labs(title="Accuracy by region",x="Region",y="Accuracy")+
+  coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))+
+  facet_grid(.~sol)
+
+
+outputName = 'tsp_acc_05_g'
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+
+```
+
+### Number of solution witnesses {#tsp_acc_nsol}
+
+Difference in the number of witnesses for instances with low/high TCC
+
+```{r}
+#Number of solutions of solvable solutions: Mean difference between low/high TCC
+
+dataInput2 = unique(dataInput %>% select(phaseT,id,nSolutions,sol) %>% filter(sol==1))
+diffMeans = t.test(nSolutions ~ phaseT ,data=dataInput2)
+pander(diffMeans)
+```
+
+```{r, fig.align='center'}
+dataInput=dataTrial_TSP
+
+#Plots nSolutions (x) vs. Accuracy (y)
+dataInput3 = dataInput %>% group_by(nSolutions,pID,phaseT)%>%summarise(accuracyMeans=mean(correct))%>%ungroup()%>%group_by(nSolutions,phaseT)%>%summarise(accuracy=mean(accuracyMeans),se=se(accuracyMeans))%>%ungroup()
+
+dataInput3$sol = as.factor(dataInput3$nSolutions>=1)
+dataInput3$phaseT = recode(dataInput3$phaseT, '0' = "Low IC", '1' = "High IC")
+dataInput3$nSolutions=dataInput3$nSolutions+1
+  
+plo=  ggplot(data=dataInput3, aes(y=accuracy, x=nSolutions)) +
+  geom_errorbar(aes(ymin=accuracy-se, ymax=accuracy+se), width=.1)+
+  geom_point(shape=23, size=3, fill="red")+
+  labs(title="Accuracy and the Number of Solutions",
+       x="log(Number of Solutions)",y="Accuracy")+
+  coord_cartesian(ylim = c(0.3,1))+
+  theme_light()+
+  scale_x_log10()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),strip.text.x = element_blank())+
+  facet_grid(phaseT~sol, scales = "free_x", space = "free_x")+
+  geom_smooth(data=dataInput3, aes(y=accuracy, x=nSolutions),method=glm,se=FALSE,fullrange=TRUE,linetype = "dashed")
+
+
+outputName = 'tsp_nsol_acc_g'
+plotExport(plo,outputName,folderOut_figures)
+```
+
+
+```{r}
+dataInput=dataTrial_TSP
+
+dataInput = dataInput %>% filter(sol==1)
+
+dataInput$nSolutions_log =log(dataInput$nSolutions)
+logitRandomIntercept = brm2(correct ~ nSolutions_log + phaseT + phaseT:nSolutions_log + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='tsp_acc_ns1'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+This calculates the significance of the  p-value of the beta(slope) of number of witnesses for instances with high TCC.
+
+```{r}
+fit = hypothesis(allModels[['tsp_acc_ns1']],"nSolutions_log + nSolutions_log:phaseT = 0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+```
+
+Marginal Effects
+
+```{r}
+plot(marginal_effects(allModels[['tsp_acc_ns1']]), plot = TRUE, ask = FALSE)
+
+```
+
+#### NSol (regressed alone)
+
+```{r}
+#st02
+dataInput=dataTrial_TSP
+dataInput = dataInput %>% filter(sol==1)
+dataInput$nSolutions_log =log(dataInput$nSolutions)
+
+#Includes a dummy if nSolutions==0, that's variable: sol.
+logitRandomIntercept = brm2(correct ~ nSolutions_log + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_ns2'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+```{r}
+mean_acc = dataInput %>% group_by(instanceNumber,nSolutions_log, sol,phaseT) %>%
+  summarise(accuracy=mean(correct)) 
+
+logitRandomIntercept = allModels[['tsp_acc_ns2']]
+pp  = plot(conditional_effects(logitRandomIntercept), plot = FALSE, ask = FALSE)
+
+pp$nSolutions_log + 
+  geom_point(data=mean_acc,aes(x = nSolutions_log, y = accuracy),inherit.aes = FALSE)
+
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions_log
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_acc,
+                               aes(x = nSolutions_log, y = accuracy, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses (ln)")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  scale_x_continuous(breaks = c(log(1),log(10),log(100),log(1000),log(10000)),
+                     limits =c(0,NA),labels = c("1","10","100","1000","10000") )+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_TSP_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+#### NSol (with TCC and no interaction)
+
+```{r}
+#st03
+dataInput=dataTrial_TSP
+dataInput = dataInput %>% filter(sol==1)
+dataInput$nSolutions_log =log(dataInput$nSolutions)
+
+
+logitRandomIntercept = brm2(correct ~ nSolutions_log + phaseT + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName='tsp_acc_ns3'
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+### IC_expost {#tsp_acc_ICexpost}
+
+```{r, fig.align='center'}
+dataInput = dataTrial_TSP
+
+# Summarise the data to plot
+mean_accuracy = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(accuracy = mean(correct))
+
+ggplot(mean_accuracy,aes(x = ICexpost, y = accuracy))+
+  geom_point() +
+  theme_light() +
+  stat_smooth(formula =  y ~ I(x^0.01), method="lm", se= FALSE)+
+  xlab("IC_expost")+
+  ylab("Human Accuracy")
+
+```
+
+#### All instances
+
+```{r}
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='tsp_acc_icexpost'
+save_summarise_model(model_ICexpost, tableName)
+
+```
+
+```{r}
+
+model_ICexpost = allModels[['tsp_acc_icexpost']]
+pp  = plot(conditional_effects(model_ICexpost), plot = TRUE, ask = FALSE)
+
+mean_accuracy$correct= mean_accuracy$accuracy
+pp$ICexpost + 
+  geom_point(data=mean_accuracy,aes(x = ICexpost, y = correct, col=as.factor(phaseT)),inherit.aes = FALSE)+
+  theme_minimal()
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=mean_accuracy,
+                               aes(x = ICexpost, y = correct, col=as.factor(sol),
+                                   shape=as.factor(phaseT), size=2.5), inherit.aes = FALSE),
+                         pp_plot$layers)
+
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Human Performance")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.2,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_TSP_acc.pdf"),plo,width = 6,height =6,units="in")
+```
+
+##### Model Fit
+
+```{r}
+#st05
+dataInput = dataTrial_TSP
+
+# Make predictions excluding random effects (pID)
+predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+
+
+# Estimating the significance of the fit. This is done considering the probability estimation rather than the binary classification.
+
+#Performs the Hosmer-Lemeshow goodness of fit test
+logistic_significance = generalhoslem::logitgof(dataInput$correct, predictions[,1], g = 10, ord = FALSE)
+logistic_significance
+
+# Finds R2 using binary outcomes
+# https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+#predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+r_2_binary = cor(dataInput$correct, predictions[,1])^2
+r_2_binary
+
+# Finds R2 using mean accuracies per instance
+predictions2 = predict(model_ICexpost,mean_accuracy, re_formula = NA)
+r_2_probabilities = cor(mean_accuracy$accuracy, predictions2[,1])^2
+r_2_probabilities
+```
+
+#### Unsatisfiable instances
+
+```{r}
+dataInput = dataTrial_TSP
+dataInput = dataInput %>% filter(sol==0)
+model_ICexpost = brm2(correct ~ ICexpost + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0)
+
+tableName='tsp_acc_icexpost2'
+save_summarise_model(model_ICexpost, tableName)
+
+```
+
+```{r}
+#st05
+dataInput = dataTrial_TSP %>% filter(sol==0)
+
+model_ICexpost = allModels[['tsp_acc_icexpost2']]
+# Make predictions excluding random effects (pID)
+predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+
+# Estimating the significance of the fit. This is done considering the probability estimation rather than the binary classification.
+
+#Performs the Hosmer-Lemeshow goodness of fit test
+logistic_significance = generalhoslem::logitgof(dataInput$correct, predictions[,1], g = 10, ord = FALSE)
+logistic_significance
+
+# Finds R2 using binary outcomes
+# https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+#predictions = predict(model_ICexpost,dataInput, re_formula = NA)
+r_2_binary = cor(dataInput$correct, predictions[,1])^2
+r_2_binary
+
+# Finds R2 using mean accuracies per instance
+
+mean_accuracy_unsat = mean_accuracy %>% filter(sol==0)
+predictions2 = predict(model_ICexpost,mean_accuracy_unsat, re_formula = NA)
+r_2_probabilities = cor(mean_accuracy_unsat$accuracy, predictions2[,1])^2
+r_2_probabilities
+```
+
+## Time Spent
+
+The default data used in this section is `dataTrial_TSP_Time`. This dataset excludes those participants that never skipped to answer
+submission.
+
+We first calculate some summary stats for the whole data set (`dataTrial_TSP`) and see how many participants were excluded in `dataTrial_TSP_Time`.
+
+#### SummStats `TSP`
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_TSP
+
+timeSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(timeSummary, digits=1, caption = "Time Summary")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=1, caption = "Time Spent By Solution")
+
+hist(dataInput$timeSpent,breaks=40)
+
+```
+
+```{r}
+all_pIDs = unique(dataTrial_TSP$pID)
+pIDs_not_in_Time = all_pIDs[!(all_pIDs %in% unique(dataTrial_TSP_Time$pID))]
+print(paste0("The participants removed in the TIME df are ", length(pIDs_not_in_Time)))
+
+
+
+obs_removed = nrow(dataTrial_TSP)-nrow(dataTrial_TSP_Time)
+print(paste0("The number of observations removed in the TIME df is ", obs_removed))
+
+```
+
+#### SummStats `TSP_Time`
+
+```{r, results='asis'}
+#Summary Stats for Decision Problem
+dataInput=dataTrial_TSP_Time
+
+timeSummary = dataInput %>% group_by(pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(timeSummary, digits=1, caption = "Time Summary")
+
+yesNoProportions = dataInput %>% group_by(sol,pID) %>% summarise(acc=mean(timeSpent)) %>% summarise(mean=mean(acc),min=min(acc),max=max(acc),SD=sd(acc))
+kable(yesNoProportions, digits=1, caption = "Time Spent By Solution")
+
+hist(dataInput$timeSpent,breaks=40)
+
+```
+
+#### Trial Number and Time Spent
+
+```{r}
+#Trial (experience effect) effect on timeSpent
+dataInput=dataTrial_TSP_Time
+dataInput$totalTrial = dataInput$block * dataInput$trial
+
+summaryByBlock = dataInput %>% group_by(block,pID) %>% summarise(time=mean(timeSpent)) %>% summarise(mean=mean(time),min=min(time),max=max(time),SD=sd(time))
+kable(summaryByBlock,digits=2 , caption="Time Spent per Trial segregated By Block")
+
+#Regression
+linearRandomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ totalTrial+ (1|pID),
+                            data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0, iter = iters_high)
+
+
+tableName='tsp_time_01_r'
+save_summarise_model(linearRandomIntercept, tableName)
+```
+
+### TCC
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP_Time %>% group_by(phaseT,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%
+  ungroup()%>%group_by(phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput$phaseT = recode(dataInput$phaseT, '0' = "Low IC", '1' = "High IC")
+
+plo= ggplot(data=dataInput, aes(y=timeSpent, x=as.factor(phaseT),label = round(timeSpent,digits = 1))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  #geom_signif(comparisons = list(c("Low IC","High IC")), annotations="***", y_position = 0.95, tip_length = 0.03)+
+  labs(title="Time Spent In and Out of phase Transition",x="Instance complexity",y="Time Spent")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white")+
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = "tsp_time_02_g"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r, results='asis'}
+#Anova contrast for In/Out Phase transition
+dataInput = dataTrial_TSP_Time
+anovaModel=aov(timeSpent~phaseT+Error(pID/phaseT),dataInput)
+anovaPValue=summary(anovaModel)[[2]][[1]][['Pr(>F)']][[1]]
+print(paste("P-value for one way ANOVA:",signif(anovaPValue,digits=3)))
+rm(dataInput)
+```
+
+`timeSpent ~ phaseT + (1|pID)`
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_Time
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(timeSpent | cens(censored_time) ~ phaseT + (1|pID),
+                       data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_time_02_r"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+##### Plot TCC
+
+```{r}
+library(forcats)
+library(ggpol)
+#dataInput = dataTrial_TSP
+
+# dataInput$timeSpent_pct = dataInput$timeSpent/SATTaskMaxTime
+# dataInput2 = dataInput %>% 
+#   group_by(instanceNumber,phaseT) %>% 
+#   summarise(timeSpent_pct=median(timeSpent_pct))
+
+dataInput = dataTrial_TSP_Time %>%
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained")) %>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput$timeSpent_pct = dataInput$timeSpent/TSPTaskMaxTime
+dataInput2 = dataInput %>% 
+  group_by(instanceNumber,region,sol) %>% 
+  summarise(timeSpent_pct=median(timeSpent_pct))
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+
+plo = ggplot(dataInput2,aes(x=region,y=timeSpent_pct,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Time-on-task")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(0.15,1)
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_TSP_time.pdf"),plo,width = 7,height =6,units="in")
+```
+
+### Satisfiability and TCC
+
+```{r , fig.align='center'}
+
+dataInput=dataTrial_TSP_Time %>% group_by(phaseT,sol,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(sol,phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+sol_names <- c(
+                    `0` = "Correct answer: NO",
+                    `1` = "Correct answer: YES",
+                    `2` = "If this is here it means data not filtered"
+                    )
+
+plo=ggplot(data=dataInput, aes(y=timeSpent, x=as.factor(as.logical(phaseT)), 
+                               label = round(timeSpent,digits = 1),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Time Spent segregated by solvanbility",x="In Phase Transition?",y="Time Spent")+
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")+
+  facet_grid(.~sol, labeller = as_labeller(sol_names))
+
+outputName = "tsp_time_03_g"
+plotExport(plo,outputName,folderOut_figures)
+```
+
+`timeSpent ~ phaseT + sol + phaseT:sol + (1|pID)`
+
+```{r}
+dataInput= dataTrial_TSP_Time
+#logistic with random effects (intercept)
+
+dataInput$phaseT = as.factor(dataInput$phaseT)
+dataInput$sol = as.factor(dataInput$sol)
+
+# TTTODO
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ phaseT + sol + phaseT:sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms,
+                      refresh = 0, iter = iters_high)
+
+tableName="tsp_time_03_r"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+Margianl Effects
+
+```{r}
+#marginal_effects(randomIntercept)
+plot(marginal_effects(allModels[["tsp_time_03_r"]]), plot = TRUE, ask = FALSE)
+
+```
+
+### Satisfiability
+
+```{r}
+#st06
+dataInput= dataTrial_TSP_Time
+#logistic with random effects (intercept)
+#dataInput$sol =as.factor(dataInput$sol)
+
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_time_03_r_B"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+### Region effect on time-on-task (Constrainedness)
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP_Time 
+
+dataInput2=dataInput %>% group_by(region,pID)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(region)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput2$region <- factor(dataInput2$region, levels = c('Underconstrained',
+                                                          'Phase Transition',
+                                                          'Overconstrained'))
+
+plo= ggplot(data=dataInput2, aes(y=timeSpent, x=region, label = round(timeSpent,digits = 1))) +
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  labs(title="time Spent by region",x="Region",y="time Spent")+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))
+
+outputName = "tsp_time_04_g"
+plotExport(plo,outputName,folderOut_figures)
+
+#Stats test for time in and out of phase transition: ANOVA
+dataInput$overConstrained= (dataInput$region=='Overconstrained')
+dataInput$underConstrained= (dataInput$region=='Underconstrained')
+```
+
+```{r}
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ overConstrained + underConstrained + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_time_04_g_A"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+Is there a difference between time-on-task between overconstrained and the underconstrained region?
+
+```{r}
+fit = hypothesis(allModels[["tsp_time_04_g_A"]],"overConstrainedTRUE=underConstrainedTRUE", seed=seed_brms)
+print(fit)
+hdi(fit$samples,ci=0.95)
+```
+
+### Number of solution witnesses that satisfy the xonstraints {#tsp_time_nsol}
+
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP_Time
+
+#Plots nSolutions (x) vs. Accuracy (y)
+dataInput3 = dataInput %>% group_by(nSolutions,pID,phaseT)%>%summarise(timeSpent1=mean(timeSpent))%>%ungroup()%>%group_by(nSolutions,phaseT)%>%summarise(timeSpent=mean(timeSpent1),se=se(timeSpent1))%>%ungroup()
+
+dataInput3$sol = dataInput3$nSolutions>=1
+dataInput3$phaseT = recode(dataInput3$phaseT, '0' = "Low IC", '1' = "High IC")
+
+dataInput3$nSolutions = dataInput3$nSolutions +1 
+
+plo= ggplot(data=dataInput3, aes(y=timeSpent, x=nSolutions)) +
+  geom_errorbar(aes(ymin=timeSpent-se, ymax=timeSpent+se), width=.1)+
+  geom_point(shape=23, size=3, fill="red")+
+  labs(title="Time Spent and the Number of Solutions",
+       x="Number of   Solutions",y="Time Spent")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  theme_light()+
+  scale_x_log10()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5),strip.text.x = element_blank())+
+  facet_grid(phaseT~sol, scales = "free_x", space = "free_x")+
+  geom_smooth(data=dataInput3, aes(y=timeSpent, x=nSolutions),method=glm,
+              se=FALSE,fullrange=TRUE,linetype = "dashed")
+
+outputName = "tsp_nsols_time_g"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+dataInput=dataTrial_TSP_Time
+
+dataInput = dataInput %>% filter(sol==1)
+dataInput$nSolutions_log = log(dataInput$nSolutions)
+
+linRandomIntercept = brm2(timeSpent_pct | cens(censored_time) ~ phaseT + nSolutions_log + phaseT:nSolutions_log + (1|pID),
+                         data=dataInput,
+                         chains=chains_brms,
+                         cores = cores_brms,
+                         seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_nsols_time_r"
+save_summarise_model(linRandomIntercept, tableName)
+```
+
+This calculates the significance of the number of witnesses beta(slope) for instance with high TCC.
+
+```{r}
+#This version recodes phaseT to OutphaseT, to 
+
+fit = hypothesis(allModels[["tsp_nsols_time_r"]],"nSolutions_log + phaseT:nSolutions_log = 0", seed=seed_brms)
+
+print(fit)
+
+hdi(fit$samples,ci=0.95)
+
+```
+
+Marginal Effects
+
+```{r}
+#marginal_effects(randomIntercept)
+plot(marginal_effects(allModels[["tsp_nsols_time_r"]]), plot = TRUE, ask = FALSE)
+```
+
+#### No. of witnesses (Regressed alone)
+
+```{r}
+#st07
+dataInput= dataTrial_TSP_Time
+dataInput = dataInput %>% filter(sol==1)
+#logistic with random effects (intercept)
+#dataInput$sol =as.factor(dataInput$sol)
+dataInput$nSolutions_log = log(dataInput$nSolutions)
+
+randomIntercept = brm2(timeSpent_pct | cens(censored_time) ~  nSolutions_log + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_nsols_time_r_B"
+save_summarise_model(randomIntercept, tableName)
+
+```
+
+```{r}
+
+#dataInput3
+mean_acc = dataInput %>% group_by(instanceNumber,nSolutions,nSolutions_log, sol,phaseT) %>%
+  summarise(accuracy=mean(correct),
+            timeSpent_med =median(timeSpent)) 
+
+logitRandomIntercept = allModels[['tsp_nsols_time_r_B']]
+pp  = plot(conditional_effects(logitRandomIntercept), plot = FALSE, ask = FALSE)
+
+pp$nSolutions + 
+  geom_point(data=mean_acc,aes(x = nSolutions_log, y = timeSpent_med/TSPTaskMaxTime),inherit.aes = FALSE)
+
+
+```
+
+```{r}
+# Improving the plot
+
+dataInput$nSolutions_log_bin = cut_width(dataInput$nSolutions_log, width=1, boundary =0,labels=FALSE)
+dataInput$nSolutions_log_bin = (dataInput$nSolutions_log_bin*1)-0.5
+
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions_log
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_boxplot(data=dataInput,
+                                      aes(x = nSolutions_log_bin, 
+                                          group = nSolutions_log_bin, 
+                                          y = timeSpent_pct), 
+                                      inherit.aes = FALSE,width=0.7),
+                        geom_point(data=mean_acc, 
+                                   aes(x = nSolutions_log, y = timeSpent_med/TSPTaskMaxTime,
+                                       col=as.factor(sol), shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+#c( "#FC4E07","#E7B800")
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(0, 1)+
+  scale_x_continuous(breaks = c(log(1),log(10),log(100),log(1000),log(10000)),
+                     limits =c(0,NA),labels = c("1","10","100","1000","10000") )+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_TSP_time.pdf"),plo,width = 6,height =6,units="in")
+```
+
+```{r}
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions_log
+pp_plot$layers[[1]]$geom_params$se = TRUE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=dataInput,
+                               aes(x = nSolutions_log, y = timeSpent_pct,
+                                   shape=as.factor(phaseT), size=0.4,
+                                   alpha = 0.5),
+                                   inherit.aes = FALSE),
+                    geom_jitter(data=mean_acc, 
+                                   aes(x = nSolutions_log, 
+                                       y = timeSpent_med/TSPTaskMaxTime,
+                                       col=as.factor(sol),
+                                       shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Number of solution Witnesses")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+#c( "#FC4E07","#E7B800")
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  # ylim(0, 1.1)+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1),limits =c(0,1.1))+
+  scale_x_continuous(breaks = c(log(1),log(10),log(100),log(1000),log(10000)),
+                     limits =c(log(2),NA),labels = c("1","10","100","1000","10000") )+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/Nwit_TSP_time2.pdf"),plo,width = 6,height =6,units="in")
+```
+
+### IC_expost {#tsp_time_ICexpost}
+
+```{r, fig.align='center'}
+dataInput = dataTrial_TSP_Time
+
+# Summarise the data to plot
+mean_accuracy_time = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(accuracy = mean(correct), 
+            timeSpent_med = median(timeSpent),
+            timeSpent = mean(timeSpent))
+
+ggplot(mean_accuracy_time,aes(x = ICexpost, y = timeSpent))+
+  geom_point() +
+  theme_light() +
+  stat_smooth(formula =  y ~ I(x^0.01), method="lm", se= FALSE)+
+  xlab("IC_expost")+
+  ylab("Time Spent")
+
+```
+
+```{r}
+model_ICexpost = brm2(timeSpent_pct | cens(censored_time) ~ ICexpost + (1|pID),
+                           data=dataInput,
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms,
+                           refresh = 0, iter = iters_high)
+
+tableName='tsp_time_icexpost'
+save_summarise_model(model_ICexpost, tableName)
+
+
+```
+
+
+```{r}
+mean_accuracy_time$correct= mean_accuracy_time$accuracy
+
+model_ICexpost = allModels[['tsp_time_icexpost']]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+dataInput$ICexpost_bin = cut_width(dataInput$ICexpost, width=0.02, boundary =0,labels=FALSE)
+dataInput$ICexpost_bin = (dataInput$ICexpost_bin*0.02)-0.01
+
+pp_plot = pp$ICexpost
+
+pp_plot$layers <- c(geom_point(data=mean_accuracy_time,
+                                   aes(x = ICexpost, y = timeSpent_med/TSPTaskMaxTime),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+pp_plot
+
+```
+
+```{r}
+pp_plot = pp$ICexpost
+
+pp_plot$layers[[1]]$geom_params$se = TRUE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_point(data=dataInput,
+                               aes(x = ICexpost, y = timeSpent_pct,
+                                   shape=as.factor(phaseT), size=0.4,
+                                   #col=as.factor(sol),
+                                   alpha = 0.3),
+                                   inherit.aes = FALSE),
+                    geom_jitter(data=mean_accuracy_time, 
+                                   aes(x = ICexpost, 
+                                       y = timeSpent_med/TSPTaskMaxTime,
+                                       col=as.factor(sol),
+                                       shape=as.factor(phaseT), size=2.5),
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Time-on-task")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+#c( "#FC4E07","#E7B800")
+  # scale_shape_manual(name="IC",values = c(2, 8))+
+  # scale_color_manual(name="Solution",values = c("red", "blue"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1),limits =c(0,1.1))+
+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_TSP_time1.pdf"),plo,width = 6,height =6,units="in")
+
+```
+
+## Time-on-task and accuracy {#tsp_time_acc}
+
+```{r, fig.align='center'}
+
+dataInput= dataTrial_TSP_Time %>% group_by(correct,pID) %>% summarise(timeSpentMeans=mean(timeSpent)) %>% ungroup() %>% group_by(correct) %>%
+  summarise(time=mean(timeSpentMeans),se=se(timeSpentMeans))%>%ungroup()
+
+plo = ggplot(data=dataInput, aes(y=time, x=as.factor(as.logical(correct)), label = round(time,digits = 2),group=1)) +
+  geom_line()+
+  geom_errorbar(aes(ymin=time-se, ymax=time+se), width=.1) +
+  geom_point(shape=21, size=3, fill="white")+
+  labs(title="Time Spent on Correct/Incorrect instances",x="Answer Correct?",y="Time Spent") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle=0,hjust=0.5))+
+  geom_text(hjust=-0.5, colour="black")
+
+outputName = "tsp_time_08_g_B"
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+
+`correct ~ timeSpent + (1|pID)`
+
+```{r, fig.align='center'}
+dataInput = dataTrial_TSP_Time
+#Stats test for time in and out of phase transition: ANOVA
+anovaModel=aov(timeSpent~correct+Error(pID/correct),dataInput)
+anovaPValue=summary(anovaModel)[[2]][[1]][['Pr(>F)']][[1]]
+print(paste("P-value for one way ANOVA:",signif(anovaPValue,digits=3)))
+
+#Stats test for time for correct/incorrect answers
+logitRandomIntercept = brm2(correct ~ timeSpent_pct + (1|pID),
+                           family=bernoulli(link="logit"),
+                           data=dataInput, 
+                           chains=chains_brms,
+                           cores = cores_brms,
+                           seed=seed_brms, refresh = 0)
+
+tableName="tsp_time_08_r_B"
+save_summarise_model(logitRandomIntercept, tableName)
+```
+
+Marginal Effects {\#tsp_time_acc}
+
+```{r}
+plot(marginal_effects(allModels[["tsp_time_08_r_B"]]), plot = TRUE, ask = FALSE)
+```
+
+
+## Number of Clicks
+
+#### Satisfiability
+
+```{r , fig.align='center'}
+dataInput=dataTrial_TSP_clicks
+
+# BOXPLOT
+plo= ggplot(data=dataInput, aes(y=n_clicks, x=region, label = round(n_clicks,digits = 0))) +
+  geom_boxplot()+
+  labs(x="Region",y="n_clicks")+
+  #coord_cartesian(ylim = c(0.5,1))+
+  geom_text(hjust=0.5,vjust = 5, colour="white") +
+  theme_light()+
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5))+
+  facet_grid(.~sol)
+
+
+outputName = 'tsp_clicks_00_g'
+plotExport(plo,outputName,folderOut_figures)
+
+```
+
+```{r}
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+dataInput2 = dataTrial_TSP_clicks %>% 
+  mutate(region = fct_relevel(region,
+                              "Underconstrained", "Phase Transition", "Overconstrained"))%>% 
+  mutate(sol= as.factor(sol)) %>% 
+  mutate(sol = fct_relevel(sol,"1", "0"))
+
+dataInput3 = dataInput2 %>% 
+  group_by(instanceNumber,region,sol) %>% 
+  summarise(n_clicks=mean(n_clicks))
+
+plo = ggplot(dataInput3,aes(x=region,y=n_clicks,fill=sol))+
+  # geom_boxjitter(aes(fill=region),jitter.color = NA,jitter.shape = 21)+
+  geom_boxjitter(jitter.color = NA,jitter.shape = 21,
+                 jitter.params = list(height=0,seed=10),
+                 outlier.shape= NA)+
+                 #,outlier.shape = 4, outlier.size=0.9)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(name  ="Region",
+                    breaks=c("1","0"),
+                    labels=c("Satisfiable","Unsatisfiable"),
+                    values=c("#90BE6D","#F94144"))+
+  xlab("Typical Case Complexity (TCC)")+
+  ylab("Number of clicks")+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  ylim(20,30)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/TCC_TSP_nclicks.pdf"),plo,width = 7,height =6,units="in")
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_01_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+#### TCC
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ phaseT + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_02_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+##### And satisfiability
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ region+ (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_02B_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+dataInput$phaseT = as.factor(dataInput$phaseT)
+dataInput$sol = as.factor(dataInput$sol)
+randomIntercept = brm2(n_clicks ~ phaseT + sol + phaseT:sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_02C_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+pp  = plot(conditional_effects(allModels[["tsp_clicks_02C_r"]]), plot = TRUE, ask = FALSE)
+```
+
+```{r}
+# stche
+model = allModels[['tsp_clicks_02C_r']]
+
+fit = hypothesis(model,"sol1 + phaseT1:sol1=0", seed=seed_brms)
+
+print(fit)
+```
+
+#### ICexpost
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ ICexpost + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_03_r"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+pp  = plot(conditional_effects(allModels[["tsp_clicks_03_r"]]), plot = TRUE, ask = FALSE)
+```
+
+```{r}
+dataInput= dataTrial_TSP_clicks
+# Summarise the data to plot
+mean_nclicks = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions) %>% 
+  summarise(n_clicks = median(n_clicks))
+
+model_ICexpost = allModels[["tsp_clicks_03_r"]]
+pp  = plot(conditional_effects(model_ICexpost), plot = FALSE, ask = FALSE)
+
+pp$ICexpost +
+  geom_point(data=mean_nclicks,aes(x = ICexpost, y =n_clicks),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$ICexpost
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+
+
+pp_plot$layers <- c(geom_jitter(data=dataInput,
+                               aes(x = ICexpost, y = n_clicks,
+                                   shape=as.factor(phaseT)), size=0.7,
+                                   alpha = 0.3,
+                                   inherit.aes = FALSE,height=0.2),
+                    geom_point(data=mean_nclicks, 
+                                   aes(x = ICexpost, y = n_clicks,
+                                       col=as.factor(sol), shape=as.factor(phaseT)),size=2.5,
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Instance Complexity (IC)")+#expression(IC[expost]))+
+  ylab("Number of Clicks")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  ylim(10,50)
+#+  guides(shape = guide_legend(override.aes = list(size = 3)))
+
+# Justification to reduce range to 10-50
+sum(between(dataTrial_TSP_clicks$n_clicks,10,50))/length(dataTrial_TSP_clicks$n_clicks)
+
+
+plo
+ggsave(paste0(folderOut_figures,"/IC_TSP_nclicks.pdf"),plo,width = 6,height =6,units="in")
+```
+
+##### And satisfiability
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ ICexpost + sol + ICexpost:sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_03_rB"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+#Logistic Regression for In/Out Phase transition
+dataInput= dataTrial_TSP_clicks
+
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ ICexpost + sol + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_03_rC"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+pp  = plot(conditional_effects(allModels[["tsp_clicks_03_rC"]]), plot = TRUE, ask = FALSE)
+```
+
+#### Number of witnesses
+
+Only Satisfiable instances:
+
+```{r}
+dataInput= dataTrial_TSP_clicks %>% filter(sol==1)
+
+dataInput$nSolutions_log = log(dataInput$nSolutions)
+#logistic with random effects (intercept)
+# TTTODO
+randomIntercept = brm2(n_clicks ~ nSolutions_log + (1|pID),
+                      data=dataInput, 
+                      chains=chains_brms,
+                      cores = cores_brms,
+                      seed=seed_brms, refresh = 0, iter = iters_high)
+
+tableName="tsp_clicks_04_rB"
+save_summarise_model(randomIntercept, tableName)
+```
+
+```{r}
+#dataInput = dataTrial_SAT_clicks
+# Summarise the data to plot
+mean_nclicks = dataInput %>% 
+  group_by(instanceNumber, sol, ICexpost, phaseT, nSolutions_log) %>% 
+  summarise(n_clicks = median(n_clicks))
+
+model_nsol = allModels[["tsp_clicks_04_rB"]]
+pp  = plot(conditional_effects(model_nsol), plot = FALSE, ask = FALSE)
+
+pp$nSolutions_log +
+   geom_point(data=mean_nclicks, aes(x = nSolutions_log, y =n_clicks),inherit.aes = FALSE)
+```
+
+```{r}
+# Improving the plot
+# Improving the plot
+size_big = 20
+size_small = 16
+size_ss = 10
+size_xs = 7
+
+pp_plot = pp$nSolutions
+pp_plot$layers[[1]]$geom_params$se = FALSE
+pp_plot$layers[[1]]$aes_params$colour="#577590"
+
+pp_plot$layers <- c(geom_jitter(data=dataInput,
+                               aes(x = nSolutions_log, y = n_clicks,
+                                   shape=as.factor(phaseT)), size=1,
+                                   alpha = 0.3,
+                                   inherit.aes = FALSE,width=0.2,height =0.2),
+                        geom_point(data=mean_nclicks, 
+                                   aes(x = nSolutions_log, y = n_clicks,
+                                       col=as.factor(sol), shape=as.factor(phaseT)), size=4,
+                                   inherit.aes = FALSE),
+                         pp_plot$layers)
+
+plo = pp_plot +
+  xlab("Number of Solution Witnesses")+
+  ylab("Number of Clicks")+
+  scale_shape_manual(name="",values = c(17,16)) +
+  scale_color_manual(name="",values = c("1"="#90BE6D","0"="#F94144"))+
+  theme_classic()+
+  theme(axis.title = element_text(size= size_big),
+       axis.text=element_text(size=size_small),
+       legend.position = "none")+
+  guides(shape = guide_legend(override.aes = list(size = 3)))+
+  scale_x_continuous(breaks = c(log(1),log(10),log(100),log(1000),log(10000)),
+                   limits =c(0,NA),labels = c("1","10","100","1000","10000") )+
+  ylim(10,50)
+
+plo
+
+ggsave(paste0(folderOut_figures,"/Nwit_TSP_nclicks.pdf"),
+       plo,width = 6,height =6,units="in")
+```
+
+# Save Models
+
+```{r}
+#saveRDS(allModels,file.path(folderOut,"ICx3_models.RData"))
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
