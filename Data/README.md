@@ -39,3 +39,19 @@ These files contain the description of each of the instances administered in the
 - dist_from_opt: Absolut value of the difference between max_distance and opt_tour.
 
 ### SAT
+
+- instanceNumber: Instance Number.
+- v: Instance variable number assignment to each literal.
+- l: Negation (or not) for each literal.
+- id: Instance generation ID.
+- type: Type of instance (`1`= High TCC , `2`= High TCC , `3`= High TCC, `4`=High TCC, `5`=Overconstrained, `6`=Underconstrained).
+- sol: Satisfiability (1= Satisfiable, 0= Unsatisfiable).
+- nVariables: Number of variables in the instance.
+- nLiterals: Number of literals in the instance.
+- nClauses: Number of clauses in the instance. 
+- ratio: Related to nClauses/NLiterals, but the exact number is wrong. Consider as classes of instances sharing the same ratio.
+- min_model: One feasible variable allocation that maximises the clauses evaluating to true (corresponds to mincost).
+- mincost: Minimum number of clauses that missing from all clauses evaluating to true.
+- models: All possible vairable allocations.
+- costs: The corresponding number of clauses that do not evaluate to TRUE.
+- nSOlutions: Number of solution witnesses.
