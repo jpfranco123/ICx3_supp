@@ -1,0 +1,303 @@
+---
+title: "Instance Properties"
+author: "Pablo Franco"
+date: "24/05/2020"
+output: html_notebook
+---
+# SETUP
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Python Setup
+library(reticulate)
+#use_python("~/.pyenv/versions/3.8.2", required=TRUE)
+#use_python("~/.pyenv/versions/3.8.2/bin/python", required=TRUE)
+#use_python("~/.pyenv/shims/python3", required=TRUE)
+#use_virtualenv("~/.pyenv/versions/3.8.2/bin/python",required = TRUE)
+use_python("~/.pyenv/versions/3.8.1/bin/python",required=TRUE)
+#py_discover_config()
+#~/.pyenv/shims/python3 rc2.py -vv sample_sat2
+```
+
+## Folders
+```{r cars}
+library(tidyverse)
+
+#Folder Setup
+if(dir.exists("~/Google Drive/My Drive")){
+  mother_folder = "~/Google Drive/My Drive/"
+} else {
+  mother_folder = "~/Google Drive/"
+}
+
+project_folder = paste0(mother_folder,"Shared PabloDN/ICx3")
+
+data_folder = paste0(project_folder,"/Data/Behavioural Data/exp_v4/Work/")
+
+code_folder = paste0(project_folder,"/Code/behavAnalysis/")
+
+#Import functions
+source(file.path(code_folder,"DescriptiveFunctions.R"))
+
+# TSP INPUT folder
+current_instances_path_tsp = paste0(project_folder,"/Data/Simulations/tsp/")
+model_info_file_tsp_dec = paste0(project_folder,"/Code/behavAnalysis/V4/instance_properties/tsp.mzn")
+model_info_file_tsp_opt = paste0(project_folder,"/Code/behavAnalysis/V4/instance_properties/tsp_opt.mzn")
+
+# Instance's information
+instance_info_tsp = read_csv2(paste0(project_folder,"/Data/Behavioural Data/exp_v4/Work/TSP/tsp02_06 February, 2019, 14-54_TSP_InstancesInfo.txt"),skip=1)
+
+# SAT INPUT folder
+instance_info_sat = read_csv2(paste0(project_folder,"/Data/Behavioural Data/exp_v4/Work/SAT/sat02_05 February, 2019, 15-16_SAT_InstancesInfo.txt"),skip=1)
+
+
+
+```
+
+# TSP (Minizinc)
+
+## Functions
+```{r}
+
+transform_path_to_batch = function(Rpath){
+  require(stringr)
+  path_batch= str_replace_all(Rpath," ","\\\\ ")
+  return(path_batch)
+}
+
+# minizinc command to find number of solutions
+mzn_run_command = function(path_dzn,model_info_file_tsp_dec){
+  mzn_command=paste0(" --solver Gecode -a -n 30000 ", 
+                    transform_path_to_batch(model_info_file_tsp_dec)," ",
+                    transform_path_to_batch(path_dzn))
+  result = system2("minizinc", 
+        mzn_command,
+        env="PATH=/Applications/MiniZincIDE.app/Contents/Resources",
+        stdout=TRUE)
+  #mzn_command = paste0("minizinc -c --solver Gecode -a model.mzn ",path_dzn)
+  return(result)
+}
+
+# Transform minizinc output to a vector
+extract_n_sols = function(mzn_output){
+  n_sols = sum(str_count(mzn_output,"x"))
+  return(n_sols)
+}
+
+# Find optimum of the optimisation variant of TSP
+mzn_run_command_opt = function(path_dzn,model_info_file_tsp_dec){
+  mzn_command=paste0(" --solver Gecode ", #-a 
+                    transform_path_to_batch(model_info_file_tsp_opt)," ",
+                    transform_path_to_batch(path_dzn))
+  result = system2("minizinc", 
+        mzn_command,
+        env="PATH=/Applications/MiniZincIDE.app/Contents/Resources",
+        stdout=TRUE)
+  #mzn_command = paste0("minizinc -c --solver Gecode -a model.mzn ",path_dzn)
+  return(result)
+}
+
+# Transform minizinc output to a vector
+extract_opt_distance = function(mzn_output){
+  opt_distance = as.numeric(mzn_output[2])
+  return(opt_distance)
+}
+
+# Transform minizinc output to a vector
+extract_opt_tour = function(mzn_output){
+  opt_tour = str_remove(mzn_output[1],"x: ")
+  return(opt_tour)
+}
+
+```
+
+## Input
+```{r}
+#Extract list of Instances path/files
+instances_file_list =paste0(current_instances_path_tsp,
+       str_replace(instance_info_tsp$id,"/Users/nitiny/kpc/output/cases/tsp/tsp-20-5/",""))
+```
+
+
+## Number of Solutions
+```{r}
+#Run minizinc for all the instances and save the nSolutions.csv file for TSP.
+
+result_list = purrr::map(instances_file_list,~ mzn_run_command(.x,model_info_file_tsp_dec))
+
+nsols_vec = purrr::map_int(result_list,extract_n_sols)
+
+nSols_tibble = tibble(instanceNumber=instance_info_tsp$instanceNumber,nSolutions=nsols_vec)
+
+```
+
+
+## Optimum
+```{r}
+result_list2 = purrr::map(instances_file_list,~ mzn_run_command_opt(.x,model_info_file_tsp_dec))
+
+opt_distance = purrr::map_dbl(result_list2,extract_opt_distance)
+
+opt_tour = purrr::map_chr(result_list2,extract_opt_tour)
+
+opt_tibble = tibble(instanceNumber=instance_info_tsp$instanceNumber,
+                    opt_distance=opt_distance,
+                    opt_tour=opt_tour)
+
+
+```
+
+## dist_from_opt
+```{r}
+tsp_out = full_join(nSols_tibble,opt_tibble, by=("instanceNumber"))
+tsp_out = full_join(tsp_out,instance_info_tsp , by=("instanceNumber"))
+
+tsp_out$dist_from_opt = abs(tsp_out$opt_distance - tsp_out$max_distance)
+
+```
+
+
+## Save Tibble
+```{r}
+write_csv2(tsp_out,
+           paste0(project_folder,"/Data/Behavioural Data/exp_v4/Work/","instance_properties_TSP.csv"))
+```
+
+
+# SAT (R and pysat(rc2.py))
+
+## Input
+```{r}
+nvars = 5 
+dataSAT = instance_info_sat 
+#dataTrial_SAT = read_csv2(file.path(data_folder,"SAT_clean.csv"))# Check to link to previous stuff
+```
+
+## Functions
+```{r}
+get_dimacs_SAT_formula = function(variables,literals,nvars ){
+  var0= as.integer(strsplit(variables,',')[[1]])
+  lit0= as.integer(strsplit(literals,',')[[1]])
+  lit = lit0*2-1
+  
+  vars_lit = var0*lit
+  nlits = length(vars_lit)
+  nclauses = nlits/3
+  boolean_s = paste("p","cnf",nvars,nclauses,"\n")
+  #boolean_s = paste("p","wcnf",nvars,nclauses,66,"\n")
+  for(i in 1:nlits){
+    vv = vars_lit[i]
+    if( i %% 3 ==0 ){
+      boolean_s=paste(boolean_s,vv,"0\n")
+    } else if( i %% 3 == 1 ) {
+      #boolean_s=paste0(boolean_s,1," ",vv)
+      boolean_s=paste(boolean_s,vv)
+    }
+    else {
+      boolean_s=paste(boolean_s,vv)
+    }
+  }
+  
+  return(boolean_s)
+}
+
+
+# Testing
+# i=9
+# variables = dataTrial_SAT$v[i]
+# literals = dataTrial_SAT$l[i]
+# # form = instanceBooleanFormula (v,l,c(1:5))
+# bool_sat = solveMax3SAT(variables,literals,nvars)
+# print(bool_sat)
+# write_lines(bool_sat,path = "sample_sat")
+
+```
+
+### Python Solver Function
+```{python}
+# import sys
+# print("Python version")
+# print (sys.version)
+from pysat.examples.rc2 import RC2
+from pysat.formula import CNF
+from pysat.formula import WCNF
+
+#file_str = "/Users/juanpf/Google Drive/My Drive/Shared PabloDN/ICx3/Code/behavAnalysis/V4/instance_properties/sample_sat"
+#cnf = CNF(from_file=file_str)
+#wcnf = WCNF(from_file=file_str2)
+#CNF(from_string='p cnf 3 3\n-1 2 0\n-2 3 0\n-3 0\n')
+
+# SAT string in DIMACS form
+# sat_sols = find_maxsat(r.bool_sat)
+def find_maxsat(sat_string):
+  cnf = CNF(from_string=sat_string)
+  wcnf = cnf.weighted()
+  
+  #print(wcnf.soft)
+  with RC2(wcnf) as rc2:
+    min_model = rc2.compute()  # solving the MaxSAT problem
+    min_cost = rc2.cost
+    print(rc2.model, min_cost)
+    # print(rc2.cost)
+    # print(rc2.model)
+    costs=[]
+    models=[]
+    for model in rc2.enumerate():
+        costs.append(rc2.cost)
+        models.append(model)
+        #print(model, rc2.cost)
+  return([min_cost,min_model,costs,models])  
+
+
+```
+
+```{r}
+dataInput = dataSAT
+n = nrow(dataInput)
+
+min_cost = vector(mode="double",length=n)
+#min_cost = vector(mode="list",length=n)
+min_model = vector(mode="list",length=n)
+costs = vector(mode="list",length=n)
+models = vector(mode="list",length=n)
+
+for(i in c(1:n)){
+  variables = dataInput$v[i]
+  literals = dataInput$l[i]
+  # Transform variables and literals to a formula string
+  sat_formula = get_dimacs_SAT_formula(variables,literals,nvars)
+  
+  # Solve the sat-formula-string
+  sat_sols = py$find_maxsat(sat_formula)
+  
+  # Retrieve the solutions
+  rsat_sols = sat_sols
+  min_cost[[i]] = rsat_sols[[1]]
+  min_model[[i]] = rsat_sols[[2]]
+  costs[[i]] = rsat_sols[[3]]
+  models[[i]] = rsat_sols[[4]]
+}
+
+dataInput$min_cost =min_cost
+dataInput$min_model = min_model
+dataInput$costs = costs
+dataInput$models = models
+
+data_out_sat = dataInput
+
+```
+
+## Number of Solutions
+```{r}
+data_out_sat = nSolutions_sat(data_out_sat)
+```
+
+## Save Tibble
+```{r}
+write_rds(data_out_sat,
+           paste0(project_folder,"/Data/Behavioural Data/exp_v4/Work/","instance_properties_SAT.rds"))
+```
+
